@@ -687,7 +687,15 @@
 
 .reader-stage {
   min-height: 0;
+  position: relative;
+  overflow: hidden;
   background: linear-gradient(180deg, #f7f9fb 0%, #eef3f7 100%);
+}
+
+/* Force epub.js container to respect parent bounds in paginated mode */
+.reader-stage .epub-container {
+  max-width: 100% !important;
+  overflow: hidden !important;
 }
 
 .reader-warning {

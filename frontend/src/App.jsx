@@ -615,7 +615,7 @@ function SettingsModal({
 class UiErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { hasError: false, message: '' }
+    this.state = { hasError: false, message: '', componentStack: '' }
   }
 
   static getDerivedStateFromError(error) {
@@ -625,8 +625,17 @@ class UiErrorBoundary extends Component {
     }
   }
 
-  componentDidCatch(error) {
-    console.error('UI crash', error)
+  componentDidCatch(error, info) {
+    console.error('[UiErrorBoundary] crash', error)
+    if (info?.componentStack) {
+      console.error('[UiErrorBoundary] component stack', info.componentStack)
+      this.setState({ componentStack: info.componentStack })
+    }
+  }
+
+  handleReset = () => {
+    console.log('[UiErrorBoundary] resetting error state')
+    this.setState({ hasError: false, message: '', componentStack: '' })
   }
 
   render() {
@@ -635,9 +644,20 @@ class UiErrorBoundary extends Component {
         <div className="ui-crash-card">
           <strong>Rozhraní narazilo na chybu, ale data nezmizela.</strong>
           <span>{this.state.message}</span>
-          <button type="button" className="ghost-button" onClick={() => window.location.reload()}>
-            Obnovit aplikaci
-          </button>
+          {this.state.componentStack ? (
+            <details style={{ fontSize: '0.75rem', opacity: 0.7, whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto' }}>
+              <summary>Technický detail</summary>
+              {this.state.componentStack}
+            </details>
+          ) : null}
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button type="button" className="ghost-button" onClick={this.handleReset}>
+              Zkusit znovu
+            </button>
+            <button type="button" className="ghost-button" onClick={() => window.location.reload()}>
+              Obnovit celou stránku
+            </button>
+          </div>
         </div>
       )
     }
@@ -670,6 +690,7 @@ export default function App() {
   const [settingsSavedAt, setSettingsSavedAt] = useState('')
   const [settingsSaveError, setSettingsSaveError] = useState('')
   const pollingRef = useRef({ jobId: '', startedAt: 0, failures: 0 })
+  const previewAbortRef = useRef(null)
   const [filters, setFilters] = useState({
     includeMain: true,
     includeFront: false,
@@ -855,20 +876,16 @@ export default function App() {
         : null,
     ].filter(Boolean)
   }, [analysis, includedSections])
+  // Stabilized by primitive values to avoid spurious ReaderPane remounts on filter changes
+  const _initialSection = includedSections[0] || analysis?.sections?.[0]
+  const _initialHref = _initialSection?.href ?? ''
+  const _initialSpineIndex = _initialSection?.spineIndex ?? null
   const originalReaderInitialLocation = useMemo(
     () =>
-      (includedSections[0]
-        ? {
-            href: includedSections[0].href,
-            spineIndex: includedSections[0].spineIndex,
-          }
-        : analysis?.sections?.[0]
-          ? {
-              href: analysis.sections[0].href,
-              spineIndex: analysis.sections[0].spineIndex,
-            }
-          : ''),
-    [analysis, includedSections]
+      _initialHref || _initialSpineIndex != null
+        ? { href: _initialHref, spineIndex: _initialSpineIndex }
+        : null,
+    [_initialHref, _initialSpineIndex]
   )
 
   const providerCosts = useMemo(() => {
@@ -1020,11 +1037,18 @@ export default function App() {
       return
     }
 
+    // Abort any in-flight preview request
+    previewAbortRef.current?.abort()
+    const controller = new AbortController()
+    previewAbortRef.current = controller
+
     setError('')
+    setPreview(null)
     setIsPreviewLoading(true)
     setPreviewStartedAt(Date.now())
     setPreviewTick(Date.now())
     setStatusText('Připravuju dvoustránkové preview překladu pro vybraný provider.')
+    console.log('[Preview] starting', { provider: selectedProvider, sections: includedSections.length })
 
     try {
       const response = await fetch(apiUrl('/api/translate-preview'), {
@@ -1039,6 +1063,7 @@ export default function App() {
           previewPageCount: 2,
           settings: sanitizeSettings(settings),
         }),
+        signal: controller.signal,
       })
       const payload = await parseJsonSafely(response)
 
@@ -1046,14 +1071,22 @@ export default function App() {
         throw new Error(payload.detail || payload.error || 'Preview failed')
       }
 
+      console.log('[Preview] complete', { wordCount: payload.wordCount, sections: payload.sections?.length })
       setPreview(payload)
       setStatusText('Preview je hotové. Porovnej si ukázku a potom případně spusť celý překlad.')
     } catch (previewError) {
+      if (previewError.name === 'AbortError') {
+        console.log('[Preview] aborted (replaced by newer request)')
+        return
+      }
+      console.error('[Preview] failed', previewError)
       setError(previewError.message)
       setStatusText('Preview překladu selhalo. Zkontroluj provider a API klíče v nastavení.')
     } finally {
-      setIsPreviewLoading(false)
-      setPreviewStartedAt(0)
+      if (!controller.signal.aborted) {
+        setIsPreviewLoading(false)
+        setPreviewStartedAt(0)
+      }
     }
   }
 
@@ -1111,13 +1144,20 @@ export default function App() {
 
   const rightMode = !originalBookData
     ? 'empty'
-    : job && job.status !== 'completed' && job.status !== 'failed'
-      ? 'progress'
-      : translatedBookData
-        ? 'translated'
-        : 'original'
+    : isPreviewLoading
+      ? 'preview-progress'
+      : job && job.status !== 'completed' && job.status !== 'failed'
+        ? 'progress'
+        : translatedBookData
+          ? 'translated'
+          : 'original'
   const previewElapsedSeconds =
     isPreviewLoading && previewStartedAt ? Math.max(1, Math.round((previewTick - previewStartedAt) / 1000)) : 0
+
+  // Instrumentation: log rightMode transitions
+  useEffect(() => {
+    console.log('[App] rightMode =', rightMode)
+  }, [rightMode])
 
   return (
     <UiErrorBoundary>
@@ -1296,7 +1336,7 @@ export default function App() {
               </div>
             ) : null}
 
-            {isPreviewLoading ? (
+            {rightMode === 'preview-progress' ? (
               <div className="viewer-card viewer-card--progress viewer-card--preview-progress">
                 <div className="progress-hero">
                   <div>
