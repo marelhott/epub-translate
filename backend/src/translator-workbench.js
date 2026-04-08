@@ -1231,12 +1231,37 @@ function resolveDeepLConfig(settings = {}) {
   }
 }
 
+function normalizeDeepLTargetLanguage(targetLanguage) {
+  return String(targetLanguage || 'CS').toUpperCase()
+}
+
+function deepLCustomInstructionsForTarget(targetLanguage, deepl) {
+  const target = normalizeDeepLTargetLanguage(targetLanguage)
+  const supportedPrefixes = ['DE', 'EN', 'ES', 'FR', 'IT', 'JA', 'KO', 'ZH']
+  const isSupported = supportedPrefixes.some((prefix) => target === prefix || target.startsWith(`${prefix}-`))
+  if (!isSupported || !deepl.customInstructions) {
+    return undefined
+  }
+
+  const instructions = Array.isArray(deepl.customInstructions)
+    ? deepl.customInstructions
+    : String(deepl.customInstructions)
+        .split(/\n+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+
+  return instructions.slice(0, 10)
+}
+
 async function translateWithDeepL({ text, sourceLanguage, targetLanguage, format = 'text', settings }) {
   const deepl = resolveDeepLConfig(settings)
   const apiKey = deepl.apiKey
   if (!apiKey) {
     throw new Error('Chybí DEEPL_API_KEY')
   }
+
+  const normalizedTargetLanguage = normalizeDeepLTargetLanguage(targetLanguage)
+  const customInstructions = deepLCustomInstructionsForTarget(normalizedTargetLanguage, deepl)
 
   const response = await fetch(`${deepl.baseUrl}/v2/translate`, {
     method: 'POST',
@@ -1246,20 +1271,21 @@ async function translateWithDeepL({ text, sourceLanguage, targetLanguage, format
     },
     body: JSON.stringify({
       text: [text],
-      target_lang: String(targetLanguage || 'CS').toUpperCase(),
+      target_lang: normalizedTargetLanguage,
       source_lang: sourceLanguage ? String(sourceLanguage).toUpperCase() : undefined,
       context: deepl.context,
       formality: deepl.formality,
       model_type: deepl.modelType,
       split_sentences: deepl.splitSentences,
       preserve_formatting: deepl.preserveFormatting,
-      custom_instructions: deepl.customInstructions,
+      custom_instructions: customInstructions,
       tag_handling: format === 'html' ? 'html' : undefined,
     }),
   })
 
   if (!response.ok) {
-    throw new Error(`DeepL request failed: ${response.status}`)
+    const detail = await response.text().catch(() => '')
+    throw new Error(`DeepL request failed: ${response.status}${detail ? ` ${detail}` : ''}`)
   }
 
   const payload = await response.json()
@@ -1279,6 +1305,9 @@ async function translateManyWithDeepL({
     throw new Error('Chybí DEEPL_API_KEY')
   }
 
+  const normalizedTargetLanguage = normalizeDeepLTargetLanguage(targetLanguage)
+  const customInstructions = deepLCustomInstructionsForTarget(normalizedTargetLanguage, deepl)
+
   const response = await fetch(`${deepl.baseUrl}/v2/translate`, {
     method: 'POST',
     headers: {
@@ -1287,20 +1316,21 @@ async function translateManyWithDeepL({
     },
     body: JSON.stringify({
       text: texts,
-      target_lang: String(targetLanguage || 'CS').toUpperCase(),
+      target_lang: normalizedTargetLanguage,
       source_lang: sourceLanguage ? String(sourceLanguage).toUpperCase() : undefined,
       context: deepl.context,
       formality: deepl.formality,
       model_type: deepl.modelType,
       split_sentences: deepl.splitSentences,
       preserve_formatting: deepl.preserveFormatting,
-      custom_instructions: deepl.customInstructions,
+      custom_instructions: customInstructions,
       tag_handling: format === 'html' ? 'html' : undefined,
     }),
   })
 
   if (!response.ok) {
-    throw new Error(`DeepL request failed: ${response.status}`)
+    const detail = await response.text().catch(() => '')
+    throw new Error(`DeepL request failed: ${response.status}${detail ? ` ${detail}` : ''}`)
   }
 
   const payload = await response.json()
