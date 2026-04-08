@@ -1,0 +1,17 @@
+{
+  "name": "ebook-translator-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace backend",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "dev:backend": "npm run dev --workspace backend",
+    "build": "npm run build --workspace frontend",
+    "start": "npm run start --workspace backend",
+    "test:integration": "node backend/scripts/integration-test.js"
+  }
+}

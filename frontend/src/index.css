@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600&display=swap');
+
+:root {
+  --page-bg: #ffffff;
+  --surface: #ffffff;
+  --surface-muted: #f7f8f9;
+  --line: rgba(20, 24, 28, 0.08);
+  --line-strong: rgba(20, 24, 28, 0.12);
+  --text-strong: #0e0f11;
+  --text-soft: #6a7482;
+  --accent: #20853b;
+  --accent-soft: #f0f7f2;
+  --accent-warm: #0ea5e9;
+  --panel-shadow:
+    0 16px 36px rgba(15, 18, 22, 0.05),
+    0 2px 8px rgba(15, 18, 22, 0.03);
+  --container-max: 1480px;
+  --font-ui: 16px;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 300;
+  line-height: 1.5;
+  color: var(--text-soft);
+  background: var(--page-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-size: var(--font-ui);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--page-bg);
+}
+
+a,
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+pre {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+h1 {
+  font-size: clamp(2.5rem, 4vw, 3.75rem);
+  line-height: 0.98;
+  letter-spacing: -0.06em;
+}
+
+h2 {
+  font-size: clamp(1.85rem, 2.8vw, 2.75rem);
+  line-height: 1.02;
+  letter-spacing: -0.05em;
+}
+
+p {
+  color: var(--text-soft);
+}
