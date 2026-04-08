@@ -4,6 +4,7 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
   const containerRef = useRef(null)
   const renditionRef = useRef(null)
   const bookRef = useRef(null)
+  const renderedOnceRef = useRef(false)
   const [locationLabel, setLocationLabel] = useState('')
   const [readerError, setReaderError] = useState('')
   const normalizedJumpTargets = useMemo(
@@ -48,6 +49,7 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
 
       try {
         setReaderError('')
+        renderedOnceRef.current = false
         containerRef.current.innerHTML = ''
         const epubModule = await import('epubjs')
         if (cancelled) {
@@ -68,6 +70,7 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
         renditionRef.current = rendition
 
         rendition.on('relocated', (location) => {
+          renderedOnceRef.current = true
           const displayed = location?.start?.displayed
           if (displayed?.page && displayed?.total) {
             setLocationLabel(`Strana ${displayed.page} z ${displayed.total}`)
@@ -82,7 +85,16 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
         await displayWithFallback(rendition, initialLocation || '')
       } catch (error) {
         if (!cancelled) {
-          setReaderError(error?.message || 'Náhled EPUB se nepodařilo otevřít.')
+          const hasVisibleContent =
+            renderedOnceRef.current ||
+            Boolean(containerRef.current?.textContent?.trim()) ||
+            Boolean(containerRef.current?.children?.length)
+
+          if (hasVisibleContent) {
+            setReaderError(error?.message || 'Některé části EPUB se nepodařilo načíst úplně přesně.')
+          } else {
+            setReaderError(error?.message || 'Náhled EPUB se nepodařilo otevřít.')
+          }
         }
       }
     }
@@ -100,6 +112,7 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
       if (containerRef.current) {
         containerRef.current.innerHTML = ''
       }
+      renderedOnceRef.current = false
       renditionRef.current = null
       bookRef.current = null
     }
@@ -177,14 +190,14 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
         </div>
       ) : null}
 
+      <div className="reader-stage" ref={containerRef} />
+
       {readerError ? (
-        <div className="reader-empty">
-          <strong>Náhled EPUB se nepodařilo otevřít</strong>
+        <div className={`reader-warning ${renderedOnceRef.current ? 'is-inline' : 'is-fatal'}`}>
+          <strong>{renderedOnceRef.current ? 'Náhled je otevřený s omezeními' : 'Náhled EPUB se nepodařilo otevřít'}</strong>
           <span>{readerError}</span>
         </div>
-      ) : (
-        <div className="reader-stage" ref={containerRef} />
-      )}
+      ) : null}
     </div>
   )
 }
