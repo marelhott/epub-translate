@@ -767,6 +767,32 @@ export default function App() {
     () => analysis?.sections?.filter((section) => section.includeInTranslation) || [],
     [analysis]
   )
+  const originalReaderTargets = useMemo(() => {
+    if (!analysis?.sections?.length) {
+      return []
+    }
+
+    const allSections = analysis.sections
+    const activeSections = includedSections.length ? includedSections : allSections
+    const oneThirdIndex = Math.min(activeSections.length - 1, Math.max(0, Math.floor(activeSections.length / 3)))
+    const twoThirdsIndex = Math.min(
+      activeSections.length - 1,
+      Math.max(0, Math.floor((activeSections.length * 2) / 3))
+    )
+
+    return [
+      allSections[0]?.href ? { label: 'Obálka', href: allSections[0].href } : null,
+      activeSections[0]?.href ? { label: 'Začátek překladu', href: activeSections[0].href } : null,
+      activeSections[oneThirdIndex]?.href ? { label: '1/3 knihy', href: activeSections[oneThirdIndex].href } : null,
+      activeSections[twoThirdsIndex]?.href
+        ? { label: '2/3 knihy', href: activeSections[twoThirdsIndex].href }
+        : null,
+    ].filter(Boolean)
+  }, [analysis, includedSections])
+  const originalReaderInitialLocation = useMemo(
+    () => includedSections[0]?.href || analysis?.sections?.[0]?.href || '',
+    [analysis, includedSections]
+  )
 
   const providerCosts = useMemo(() => {
     const translatedCharacters = analysis?.summary?.translatedCharacters || 0
@@ -1112,8 +1138,10 @@ export default function App() {
               <div className="viewer-card">
                 <ReaderPane
                   bookData={originalBookData}
-                  title={analysis?.metadata?.title || 'Originál'}
+                  title={`${analysis?.metadata?.title || 'Originál'} · celá listovatelná kniha`}
                   emptyLabel="Prázdný prohlížeč knihy"
+                  initialLocation={originalReaderInitialLocation}
+                  jumpTargets={originalReaderTargets}
                 />
               </div>
             ) : null}
@@ -1279,7 +1307,7 @@ export default function App() {
                 disabled={!includedSections.length || isPreviewLoading}
                 onClick={runPreviewTranslation}
               >
-                {isPreviewLoading ? 'Připravuju preview...' : 'Preview 2 stran'}
+                {isPreviewLoading ? 'Připravuju ukázku...' : 'Přeložit 2 náhodné strany'}
               </button>
               <button
                 type="button"
@@ -1314,11 +1342,21 @@ export default function App() {
 
             {preview ? (
               <section className="sidebar-card">
-                <div className="sidebar-label">Preview sekcí</div>
+                <div className="sidebar-label">Ukázka překladu</div>
                 <div className="preview-copy preview-copy--compact">
                   <strong>
                     {preview.provider} · {formatNumber(preview.wordCount)} slov · {formatPages(preview.pageCount)} strany
                   </strong>
+                  <span className="preview-meta-note">
+                    Vzorek dvou náhodně vybraných stran z rozsahu označeného k překladu. Celou knihu listuješ ve středním panelu.
+                  </span>
+                  {preview.sections?.length ? (
+                    <div className="preview-sampled-sections">
+                      {preview.sections.map((section) => (
+                        <span key={section.id}>{section.title}</span>
+                      ))}
+                    </div>
+                  ) : null}
                   <div
                     className="preview-html preview-html--compact"
                     dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(preview.translatedHtml || '') }}
@@ -1329,12 +1367,12 @@ export default function App() {
 
             {isPreviewLoading && !preview ? (
               <section className="sidebar-card">
-                <div className="sidebar-label">Preview sekcí</div>
+                <div className="sidebar-label">Ukázka překladu</div>
                 <div className="preview-copy preview-copy--compact preview-copy--loading">
-                  <strong>Načítám preview…</strong>
+                  <strong>Načítám ukázku…</strong>
                   <span>
                     Provider {providers.find((item) => item.id === selectedProvider)?.label || selectedProvider} právě
-                    překládá ukázku dvou stran.
+                    překládá dvě náhodně vybrané strany z přeložitelné části knihy.
                   </span>
                 </div>
               </section>

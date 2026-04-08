@@ -644,7 +644,7 @@
 .reader-shell {
   height: 640px;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
 }
 
 .reader-toolbar {
@@ -667,6 +667,22 @@
 .reader-controls {
   display: flex;
   gap: 8px;
+}
+
+.reader-jumps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.ghost-button--jump {
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 0.76rem;
 }
 
 .reader-stage {
