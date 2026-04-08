@@ -16,7 +16,9 @@ const xmlBuilder = new XMLBuilder({
   attributeNamePrefix: '',
   format: true,
 })
-const CACHE_DIR = join(process.cwd(), 'backend', 'data')
+const CACHE_DIR = process.env.VERCEL
+  ? join('/tmp', 'ebook-translator-data')
+  : join(process.cwd(), 'backend', 'data')
 const CACHE_FILE = join(CACHE_DIR, 'translation-cache.json')
 export const JOBS_DIR = join(CACHE_DIR, 'jobs')
 export const UPLOADS_DIR = join(CACHE_DIR, 'uploads')

@@ -8,3 +8,4 @@ dist/
 frontend/dist/
 backend/data/
 *.clean.epub
+.vercel
