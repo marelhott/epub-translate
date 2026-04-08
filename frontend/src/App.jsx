@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { ReaderPane } from './components/ReaderPane'
 import './app.css'
@@ -612,6 +612,40 @@ function SettingsModal({
   )
 }
 
+class UiErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, message: '' }
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: error?.message || 'Aplikace narazila na neočekávanou chybu.',
+    }
+  }
+
+  componentDidCatch(error) {
+    console.error('UI crash', error)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="ui-crash-card">
+          <strong>Rozhraní narazilo na chybu, ale data nezmizela.</strong>
+          <span>{this.state.message}</span>
+          <button type="button" className="ghost-button" onClick={() => window.location.reload()}>
+            Obnovit aplikaci
+          </button>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
+}
+
 export default function App() {
   const [providers, setProviders] = useState([])
   const [selectedProvider, setSelectedProvider] = useState('deepl')
@@ -624,6 +658,8 @@ export default function App() {
   const [exportMeta, setExportMeta] = useState(null)
   const [preview, setPreview] = useState(null)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
+  const [previewStartedAt, setPreviewStartedAt] = useState(0)
+  const [previewTick, setPreviewTick] = useState(0)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [originalBookData, setOriginalBookData] = useState(null)
   const [translatedBookData, setTranslatedBookData] = useState(null)
@@ -693,6 +729,18 @@ export default function App() {
       }
     })
   }, [filters])
+
+  useEffect(() => {
+    if (!isPreviewLoading) {
+      return undefined
+    }
+
+    const interval = window.setInterval(() => {
+      setPreviewTick(Date.now())
+    }, 250)
+
+    return () => window.clearInterval(interval)
+  }, [isPreviewLoading])
 
   useEffect(() => {
     if (!job?.id || job.status === 'completed' || job.status === 'failed') {
@@ -974,6 +1022,8 @@ export default function App() {
 
     setError('')
     setIsPreviewLoading(true)
+    setPreviewStartedAt(Date.now())
+    setPreviewTick(Date.now())
     setStatusText('Připravuju dvoustránkové preview překladu pro vybraný provider.')
 
     try {
@@ -1003,6 +1053,7 @@ export default function App() {
       setStatusText('Preview překladu selhalo. Zkontroluj provider a API klíče v nastavení.')
     } finally {
       setIsPreviewLoading(false)
+      setPreviewStartedAt(0)
     }
   }
 
@@ -1065,9 +1116,12 @@ export default function App() {
       : translatedBookData
         ? 'translated'
         : 'original'
+  const previewElapsedSeconds =
+    isPreviewLoading && previewStartedAt ? Math.max(1, Math.round((previewTick - previewStartedAt) / 1000)) : 0
 
   return (
-    <AppShell onOpenSettings={() => setIsSettingsOpen(true)}>
+    <UiErrorBoundary>
+      <AppShell onOpenSettings={() => setIsSettingsOpen(true)}>
       <main className="app-layout">
         <section className="app-intro app-intro--compact">
           <h1>Překlad EPUB do čistého pracovního výstupu.</h1>
@@ -1238,6 +1292,41 @@ export default function App() {
                   {job?.progress?.currentSectionTitle
                     ? `Právě se zpracovává: ${job.progress.currentSectionTitle}`
                     : 'Čekám na další blok k překladu'}
+                </div>
+              </div>
+            ) : null}
+
+            {isPreviewLoading ? (
+              <div className="viewer-card viewer-card--progress viewer-card--preview-progress">
+                <div className="progress-hero">
+                  <div>
+                    <div className="sidebar-label">Probíhá testovací překlad</div>
+                    <h2>{providers.find((item) => item.id === selectedProvider)?.label || selectedProvider}</h2>
+                    <p>{statusText}</p>
+                  </div>
+                  <strong>{previewElapsedSeconds}s</strong>
+                </div>
+
+                <div className="progress-track progress-track--hero">
+                  <div
+                    className="progress-fill progress-fill--indeterminate"
+                    style={{ width: '55%' }}
+                  />
+                </div>
+
+                <div className="progress-grid">
+                  <div className="progress-box progress-box--accent">
+                    <strong>Preview 2 stran</strong>
+                    <span>náhodný vzorek z přeložitelné části</span>
+                  </div>
+                  <div className="progress-box">
+                    <strong>{previewElapsedSeconds}s</strong>
+                    <span>aktuální doba čekání</span>
+                  </div>
+                  <div className="progress-box">
+                    <strong>{includedSections.length}</strong>
+                    <span>sekcí v aktivním rozsahu</span>
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1426,6 +1515,7 @@ export default function App() {
         onSave={() => saveSettings(false)}
         onTest={() => refreshDiagnostics(settings)}
       />
-    </AppShell>
+      </AppShell>
+    </UiErrorBoundary>
   )
 }

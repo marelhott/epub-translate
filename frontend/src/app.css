@@ -751,6 +751,10 @@
   transition: width 0.35s ease;
 }
 
+.progress-fill--indeterminate {
+  animation: preview-progress-slide 1.4s ease-in-out infinite;
+}
+
 .progress-fill.is-failed {
   background: linear-gradient(90deg, #b42318 0%, #f97066 100%);
 }
@@ -860,6 +864,35 @@
   background: #fff4f4;
   border: 1px solid rgba(161, 38, 38, 0.16);
   border-radius: 10px;
+}
+
+.ui-crash-card {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.ui-crash-card strong {
+  color: var(--text-strong);
+}
+
+.ui-crash-card span {
+  color: var(--text-soft);
+}
+
+@keyframes preview-progress-slide {
+  0% {
+    transform: translateX(-45%);
+  }
+  50% {
+    transform: translateX(60%);
+  }
+  100% {
+    transform: translateX(-45%);
+  }
 }
 
 .modal-backdrop {
