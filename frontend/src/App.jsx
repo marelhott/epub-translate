@@ -781,16 +781,45 @@ export default function App() {
     )
 
     return [
-      allSections[0]?.href ? { label: 'Obálka', href: allSections[0].href } : null,
-      activeSections[0]?.href ? { label: 'Začátek překladu', href: activeSections[0].href } : null,
-      activeSections[oneThirdIndex]?.href ? { label: '1/3 knihy', href: activeSections[oneThirdIndex].href } : null,
-      activeSections[twoThirdsIndex]?.href
-        ? { label: '2/3 knihy', href: activeSections[twoThirdsIndex].href }
+      allSections[0]
+        ? { label: 'Obálka', href: allSections[0].href, spineIndex: allSections[0].spineIndex }
+        : null,
+      activeSections[0]
+        ? {
+            label: 'Začátek překladu',
+            href: activeSections[0].href,
+            spineIndex: activeSections[0].spineIndex,
+          }
+        : null,
+      activeSections[oneThirdIndex]
+        ? {
+            label: '1/3 knihy',
+            href: activeSections[oneThirdIndex].href,
+            spineIndex: activeSections[oneThirdIndex].spineIndex,
+          }
+        : null,
+      activeSections[twoThirdsIndex]
+        ? {
+            label: '2/3 knihy',
+            href: activeSections[twoThirdsIndex].href,
+            spineIndex: activeSections[twoThirdsIndex].spineIndex,
+          }
         : null,
     ].filter(Boolean)
   }, [analysis, includedSections])
   const originalReaderInitialLocation = useMemo(
-    () => includedSections[0]?.href || analysis?.sections?.[0]?.href || '',
+    () =>
+      (includedSections[0]
+        ? {
+            href: includedSections[0].href,
+            spineIndex: includedSections[0].spineIndex,
+          }
+        : analysis?.sections?.[0]
+          ? {
+              href: analysis.sections[0].href,
+              spineIndex: analysis.sections[0].spineIndex,
+            }
+          : ''),
     [analysis, includedSections]
   )
 

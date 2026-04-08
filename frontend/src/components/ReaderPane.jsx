@@ -1,5 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+function normalizeLocator(target) {
+  if (target && typeof target === 'object') {
+    if (target.locator !== undefined && target.locator !== null && target.locator !== '') {
+      return target.locator
+    }
+    if (target.spineIndex !== undefined && target.spineIndex !== null) {
+      return target.spineIndex
+    }
+    if (target.href) {
+      return target.href
+    }
+  }
+  return target
+}
+
 export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocation = '', jumpTargets = [] }) {
   const containerRef = useRef(null)
   const renditionRef = useRef(null)
@@ -10,10 +25,13 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
   const normalizedJumpTargets = useMemo(
     () =>
       jumpTargets.filter((target, index, array) => {
-        if (!target?.href || !target?.label) {
+        if (normalizeLocator(target) === undefined || normalizeLocator(target) === null || !target?.label) {
           return false
         }
-        return array.findIndex((item) => item.href === target.href) === index
+        return (
+          array.findIndex((item) => JSON.stringify(normalizeLocator(item)) === JSON.stringify(normalizeLocator(target))) ===
+          index
+        )
       }),
     [jumpTargets]
   )
@@ -21,10 +39,13 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
   useEffect(() => {
     let cancelled = false
 
-    async function displayWithFallback(rendition, href) {
-      const candidates = [href, href ? href.split('/').pop() : '', undefined].filter(
-        (candidate, index, array) => array.findIndex((item) => item === candidate) === index
-      )
+    async function displayWithFallback(rendition, target) {
+      const locator = normalizeLocator(target)
+      const hrefFallback =
+        typeof locator === 'string' && locator ? locator.split('/').pop() : ''
+      const candidates = [locator, hrefFallback, undefined].filter((candidate, index, array) => {
+        return array.findIndex((item) => item === candidate) === index
+      })
 
       let lastError = null
       for (const candidate of candidates) {
@@ -126,8 +147,9 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
     renditionRef.current?.prev()
   }
 
-  function goToHref(href) {
-    if (!href) {
+  function goToTarget(target) {
+    const locator = normalizeLocator(target)
+    if (locator === undefined || locator === null || locator === '') {
       return
     }
     const rendition = renditionRef.current
@@ -138,10 +160,14 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
     ;(async () => {
       try {
         setReaderError('')
-        await rendition.display(href)
+        await rendition.display(locator)
       } catch {
         try {
-          await rendition.display(href.split('/').pop())
+          if (typeof locator === 'string') {
+            await rendition.display(locator.split('/').pop())
+          } else {
+            throw new Error('fallback-unavailable')
+          }
         } catch (error) {
           setReaderError(error?.message || 'Na zvolenou část knihy se nepodařilo skočit.')
         }
@@ -179,10 +205,10 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
         <div className="reader-jumps">
           {normalizedJumpTargets.map((target) => (
             <button
-              key={target.href}
+              key={target.href || `${target.spineIndex}`}
               type="button"
               className="ghost-button ghost-button--jump"
-              onClick={() => goToHref(target.href)}
+              onClick={() => goToTarget(target)}
             >
               {target.label}
             </button>
