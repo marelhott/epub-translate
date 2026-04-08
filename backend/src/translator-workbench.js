@@ -1786,34 +1786,20 @@ export async function translateSelectedSections(payload) {
   const previewParts = []
   const previewSections = []
   let collectedWords = 0
+  const previewSamples = collectRepresentativeTextPreview(selected, maxWords, Number(previewPageCount || 2))
 
-  for (const section of selected) {
-    const words = normalizeText(section.plainText).split(/\s+/).filter(Boolean)
-    if (!words.length) {
+  for (const sample of previewSamples) {
+    if (!sample.text) {
       continue
     }
 
-    const remaining = Math.max(0, maxWords - collectedWords)
-    if (!remaining) {
-      break
-    }
-
-    const excerpt = words.slice(0, remaining).join(' ')
-    if (!excerpt) {
-      continue
-    }
-
-    previewParts.push(excerpt)
+    previewParts.push(sample.text)
     previewSections.push({
-      id: section.id,
-      title: section.title,
-      wordCount: excerpt.split(/\s+/).length,
+      id: sample.id,
+      title: sample.title,
+      wordCount: sample.wordCount,
     })
-    collectedWords += excerpt.split(/\s+/).length
-
-    if (collectedWords >= maxWords) {
-      break
-    }
+    collectedWords += sample.wordCount
   }
 
   const joined = previewParts.join('\n\n')
@@ -1865,37 +1851,16 @@ export async function translatePreviewFromEpub(payload) {
   const zip = await JSZip.loadAsync(buffer)
   const selected = sections.filter((section) => section.includeInTranslation)
   const maxWords = Math.max(300, Number(previewPageCount || 2) * 300)
-  const previewBlocks = []
-  let collectedWords = 0
-
-  for (const section of selected) {
-    if (collectedWords >= maxWords) {
-      break
-    }
-
-    const file = zip.file(section.href)
-    if (!file) {
-      continue
-    }
-
-    const html = await file.async('string')
-    const trimmed = trimTrailingBackMatter(html)
-    const payloads = getTranslatableNodePayloads(trimmed.html)
-
-    for (const block of payloads) {
-      if (collectedWords >= maxWords) {
-        break
-      }
-
-      const blockWords = block.plainText.split(/\s+/).filter(Boolean).length
-      previewBlocks.push({
-        sectionId: section.id,
-        sectionTitle: section.title,
-        ...block,
-      })
-      collectedWords += blockWords
-    }
-  }
+  const previewBlocks = await collectRepresentativePreviewBlocks({
+    zip,
+    sections: selected,
+    maxWords,
+    sampleCount: Number(previewPageCount || 2),
+  })
+  const collectedWords = previewBlocks.reduce(
+    (sum, block) => sum + block.plainText.split(/\s+/).filter(Boolean).length,
+    0
+  )
 
   if (!previewBlocks.length) {
     return {
@@ -1973,6 +1938,155 @@ export async function translatePreviewFromEpub(payload) {
       ).values()
     ),
   }
+}
+
+function sectionWordCount(section) {
+  return Number(section?.stats?.wordCount || section?.wordCount || 0)
+}
+
+function chunkSectionsForPreview(sections, sampleCount) {
+  const normalizedCount = Math.max(1, Math.min(sampleCount || 2, sections.length || 1))
+  const meaningful = sections.filter((section) => sectionWordCount(section) >= 80)
+  const usable = meaningful.length ? meaningful : sections.filter((section) => sectionWordCount(section) > 0)
+  const source = usable.length ? usable : sections
+
+  if (!source.length) {
+    return []
+  }
+
+  const buckets = []
+  for (let index = 0; index < normalizedCount; index += 1) {
+    const start = Math.floor((index * source.length) / normalizedCount)
+    const end = Math.floor(((index + 1) * source.length) / normalizedCount)
+    const bucket = source.slice(start, Math.max(start + 1, end))
+    if (bucket.length) {
+      buckets.push(bucket)
+    }
+  }
+
+  return buckets
+}
+
+function pickSectionFromBucket(bucket) {
+  if (!bucket.length) {
+    return null
+  }
+
+  const ranked = [...bucket].sort((left, right) => sectionWordCount(right) - sectionWordCount(left))
+  const topSlice = ranked.slice(0, Math.min(3, ranked.length))
+  const picked = topSlice[Math.floor(Math.random() * topSlice.length)]
+  return picked || ranked[0] || bucket[0]
+}
+
+function collectRepresentativeTextPreview(sections, maxWords, sampleCount) {
+  const buckets = chunkSectionsForPreview(sections, sampleCount)
+  const samples = []
+  const wordsPerSample = Math.max(120, Math.floor(maxWords / Math.max(1, buckets.length)))
+
+  for (const bucket of buckets) {
+    const section = pickSectionFromBucket(bucket)
+    if (!section) {
+      continue
+    }
+
+    const words = normalizeText(section.plainText).split(/\s+/).filter(Boolean)
+    if (!words.length) {
+      continue
+    }
+
+    const maxStart = Math.max(0, words.length - wordsPerSample)
+    const startIndex =
+      words.length <= wordsPerSample ? 0 : Math.floor(Math.random() * (maxStart + 1))
+    const excerptWords = words.slice(startIndex, startIndex + wordsPerSample)
+    const excerpt = excerptWords.join(' ').trim()
+
+    if (!excerpt) {
+      continue
+    }
+
+    samples.push({
+      id: section.id,
+      title: section.title,
+      text: excerpt,
+      wordCount: excerptWords.length,
+    })
+  }
+
+  return samples
+}
+
+function collectBlockWindow(payloads, targetWords) {
+  if (!payloads.length) {
+    return []
+  }
+
+  const wordsPerBlock = payloads.map((block) => block.plainText.split(/\s+/).filter(Boolean).length)
+  const totalWords = wordsPerBlock.reduce((sum, count) => sum + count, 0)
+  if (!totalWords) {
+    return []
+  }
+
+  if (totalWords <= targetWords) {
+    return payloads
+  }
+
+  const maxStartIndex = Math.max(0, payloads.length - 1)
+  let startIndex = Math.floor(Math.random() * (maxStartIndex + 1))
+  let collected = 0
+  const blocks = []
+
+  for (let index = startIndex; index < payloads.length; index += 1) {
+    blocks.push(payloads[index])
+    collected += wordsPerBlock[index]
+    if (collected >= targetWords) {
+      return blocks
+    }
+  }
+
+  collected = 0
+  const prefix = []
+  for (let index = 0; index < startIndex; index += 1) {
+    prefix.push(payloads[index])
+    collected += wordsPerBlock[index]
+    if (collected >= targetWords) {
+      break
+    }
+  }
+
+  return prefix.length ? prefix : blocks
+}
+
+async function collectRepresentativePreviewBlocks({ zip, sections, maxWords, sampleCount }) {
+  const buckets = chunkSectionsForPreview(sections, sampleCount)
+  const wordsPerSample = Math.max(120, Math.floor(maxWords / Math.max(1, buckets.length)))
+  const blocks = []
+
+  for (const bucket of buckets) {
+    const section = pickSectionFromBucket(bucket)
+    if (!section) {
+      continue
+    }
+
+    const file = zip.file(section.href)
+    if (!file) {
+      continue
+    }
+
+    const html = await file.async('string')
+    const trimmed = trimTrailingBackMatter(html)
+    const payloads = getTranslatableNodePayloads(trimmed.html).map((block) => ({
+      sectionId: section.id,
+      sectionTitle: section.title,
+      ...block,
+    }))
+    const sampledWindow = collectBlockWindow(payloads, wordsPerSample)
+
+    for (const block of sampledWindow) {
+      blocks.push(block)
+    }
+  }
+
+  return blocks
 }
 
 export async function exportTranslatedEpub(payload) {
