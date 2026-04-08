@@ -760,6 +760,13 @@ function providerTimeoutSignal(timeoutMs = 45000) {
   return AbortSignal.timeout(timeoutMs)
 }
 
+function providerTimeoutMs(provider, baseTimeoutMs = 45000) {
+  if (provider === 'glm') {
+    return 90000
+  }
+  return baseTimeoutMs
+}
+
 function normalizeProviderError(error, provider) {
   const message = error instanceof Error ? error.message : String(error || 'Unknown error')
   if (
@@ -785,7 +792,7 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
 
   const response = await fetch(`${String(openrouter.baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
-    signal: providerTimeoutSignal(),
+    signal: providerTimeoutSignal(providerTimeoutMs(provider)),
     headers: {
       Authorization: `Bearer ${openrouter.apiKey}`,
       'Content-Type': 'application/json',
@@ -1651,7 +1658,7 @@ async function translateWithGlm({ text, sourceLanguage, targetLanguage, format =
 
   const response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
-    signal: providerTimeoutSignal(),
+    signal: providerTimeoutSignal(providerTimeoutMs('glm')),
     headers,
     body: JSON.stringify({
       model,
