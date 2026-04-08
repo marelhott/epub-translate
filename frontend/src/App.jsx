@@ -84,7 +84,9 @@ const GLM_HOSTED_PRESETS = [
 
 function loadStoredSettings() {
   try {
-    const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY)
+    const raw =
+      window.localStorage.getItem(SETTINGS_STORAGE_KEY) ||
+      window.sessionStorage.getItem(SETTINGS_STORAGE_KEY)
     if (!raw) {
       return DEFAULT_SETTINGS
     }
@@ -261,7 +263,19 @@ function SectionToggle({ section, onToggle }) {
   )
 }
 
-function SettingsModal({ open, settings, savedAt, onClose, onChange, onReset, onSave }) {
+function SettingsModal({
+  open,
+  settings,
+  savedAt,
+  diagnostics,
+  diagnosticsLoading,
+  saveError,
+  onClose,
+  onChange,
+  onReset,
+  onSave,
+  onTest,
+}) {
   if (!open) {
     return null
   }
@@ -272,12 +286,41 @@ function SettingsModal({ open, settings, savedAt, onClose, onChange, onReset, on
         <div className="settings-modal-head">
           <div>
             <strong>Nastavení providerů</strong>
-            <span>API klíče zůstávají lokálně v tomhle prohlížeči a jen dočasně v běžící backend session.</span>
+            <span>Uložení proběhne v tomhle prohlížeči a hned se otestuje proti backendu.</span>
           </div>
           <button type="button" className="ghost-button" onClick={onClose}>
             Zavřít
           </button>
         </div>
+
+        <section className="settings-status-bar">
+          <div className="settings-status-grid">
+            {[
+              ['openai', 'GPT'],
+              ['claude', 'Claude'],
+              ['google', 'Gemini'],
+              ['glm', 'GLM'],
+              ['deepl', 'DeepL'],
+            ].map(([id, label]) => {
+              const diagnostic = diagnostics?.[id]
+              const diagnosticLabel = diagnostic?.status === 'ready' ? 'Ready' : diagnostic?.label || 'Čeká na test'
+              return (
+                <div key={id} className={`settings-status-chip settings-status-chip--${diagnostic?.status || 'idle'}`}>
+                  <span className="provider-diagnostic-dot" />
+                  <strong>{label}</strong>
+                  <span>{diagnosticLabel}</span>
+                </div>
+              )
+            })}
+          </div>
+          <div className="settings-status-actions">
+            {savedAt ? <span className="settings-saved-badge">Uloženo v {savedAt}</span> : <span />}
+            {saveError ? <span className="settings-save-error">{saveError}</span> : null}
+            <button type="button" className="ghost-button" onClick={onTest}>
+              {diagnosticsLoading ? 'Testuju...' : 'Otestovat připojení'}
+            </button>
+          </div>
+        </section>
 
         <div className="settings-grid">
           <section className="settings-section">
@@ -502,12 +545,12 @@ function SettingsModal({ open, settings, savedAt, onClose, onChange, onReset, on
         </div>
 
         <div className="settings-modal-foot">
-          {savedAt ? <span className="settings-saved-badge">Uloženo v {savedAt}</span> : <span />}
+          <span />
           <button type="button" className="ghost-button" onClick={onReset}>
             Obnovit výchozí hodnoty
           </button>
           <button type="button" className="primary-button" onClick={onSave}>
-            Uložit nastavení
+            Uložit a otestovat
           </button>
         </div>
       </div>
@@ -535,6 +578,7 @@ export default function App() {
   const [diagnostics, setDiagnostics] = useState({})
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
   const [settingsSavedAt, setSettingsSavedAt] = useState('')
+  const [settingsSaveError, setSettingsSaveError] = useState('')
   const [filters, setFilters] = useState({
     includeMain: true,
     includeFront: false,
@@ -678,15 +722,31 @@ export default function App() {
     }))
   }
 
-  function saveSettings(closeAfter = true) {
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
-    setSettingsSavedAt(new Date().toLocaleTimeString('cs-CZ'))
-    if (closeAfter) {
-      setIsSettingsOpen(false)
+  function persistSettings(nextSettings) {
+    const serialized = JSON.stringify(nextSettings)
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, serialized)
+    const stored = window.localStorage.getItem(SETTINGS_STORAGE_KEY)
+    if (stored !== serialized) {
+      throw new Error('Nastavení se nepodařilo uložit do prohlížeče.')
+    }
+    window.sessionStorage.setItem(SETTINGS_STORAGE_KEY, serialized)
+  }
+
+  async function saveSettings(closeAfter = false) {
+    try {
+      persistSettings(settings)
+      setSettingsSavedAt(new Date().toLocaleTimeString('cs-CZ'))
+      setSettingsSaveError('')
+      await refreshDiagnostics(settings)
+      if (closeAfter) {
+        setIsSettingsOpen(false)
+      }
+    } catch (error) {
+      setSettingsSaveError(error.message || 'Uložení nastavení selhalo.')
     }
   }
 
-  async function refreshDiagnostics() {
+  async function refreshDiagnostics(nextSettings = settings) {
     setDiagnosticsLoading(true)
     try {
       const response = await fetch(apiUrl('/api/providers/diagnostics'), {
@@ -694,7 +754,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          settings: sanitizeSettings(settings),
+          settings: sanitizeSettings(nextSettings),
         }),
       })
       const payload = await response.json()
@@ -1189,10 +1249,17 @@ export default function App() {
         open={isSettingsOpen}
         settings={settings}
         savedAt={settingsSavedAt}
+        diagnostics={diagnostics}
+        diagnosticsLoading={diagnosticsLoading}
+        saveError={settingsSaveError}
         onClose={() => setIsSettingsOpen(false)}
         onChange={updateSettings}
-        onReset={() => setSettings(DEFAULT_SETTINGS)}
-        onSave={() => saveSettings(true)}
+        onReset={() => {
+          setSettings(DEFAULT_SETTINGS)
+          setSettingsSaveError('')
+        }}
+        onSave={() => saveSettings(false)}
+        onTest={() => refreshDiagnostics(settings)}
       />
     </AppShell>
   )

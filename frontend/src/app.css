@@ -437,6 +437,81 @@
   font-size: 0.92rem;
 }
 
+.settings-save-error {
+  color: #b42318;
+  font-size: 0.82rem;
+}
+
+.settings-status-bar {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fbfcfd;
+  padding: 14px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.settings-status-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-status-chip {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: #fff;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+}
+
+.settings-status-chip .provider-diagnostic-dot {
+  grid-row: 1 / span 2;
+}
+
+.settings-status-chip strong {
+  font-size: 0.78rem;
+  line-height: 1.1;
+}
+
+.settings-status-chip span:last-child {
+  font-size: 0.68rem;
+  line-height: 1.2;
+  color: var(--text-soft);
+}
+
+.settings-status-chip--ready {
+  border-color: rgba(22, 163, 74, 0.2);
+  background: #f7fcf8;
+}
+
+.settings-status-chip--ready .provider-diagnostic-dot {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
+}
+
+.settings-status-chip--missing_key .provider-diagnostic-dot,
+.settings-status-chip--missing_url .provider-diagnostic-dot,
+.settings-status-chip--idle .provider-diagnostic-dot {
+  background: #d97706;
+}
+
+.settings-status-chip--unavailable .provider-diagnostic-dot {
+  background: #dc2626;
+}
+
+.settings-status-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .provider-option-topline,
 .provider-option-tierline {
   display: flex;
@@ -905,6 +980,10 @@
 
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-status-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .sidebar--providers,
