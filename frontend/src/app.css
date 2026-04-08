@@ -727,6 +727,11 @@
   font-size: 0.72rem;
 }
 
+.progress-box--accent {
+  background: linear-gradient(180deg, #f5fbf6 0%, #eef8f1 100%);
+  border: 1px solid rgba(32, 133, 59, 0.18);
+}
+
 .current-section,
 .bottom-note,
 .inline-error {

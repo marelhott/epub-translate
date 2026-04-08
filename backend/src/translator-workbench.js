@@ -1904,28 +1904,51 @@ export async function translatePreviewFromEpub(payload) {
     }
   }
 
-  const translationBatch = await translateTexts(provider, previewBlocks, {
-    sourceLanguage,
-    targetLanguage,
-    settings,
-  })
-
   const sourceHtml = previewBlocks
     .map((block) => `<${block.tagName || 'p'}>${block.source}</${block.tagName || 'p'}>`)
     .join('\n')
-  const translatedHtml = translationBatch.translations
-    .map(
-      (block, index) =>
-        `<${previewBlocks[index]?.tagName || 'p'}>${block}</${previewBlocks[index]?.tagName || 'p'}>`
-    )
-    .join('\n')
+  const useSinglePreviewRequest = ['openai', 'claude', 'glm'].includes(provider)
+
+  let translatedHtml = ''
+  let translatedText = ''
+
+  if (useSinglePreviewRequest) {
+    const translator = translators[provider]
+    const translatedCombined =
+      provider === 'identity'
+        ? sourceHtml
+        : await translator({
+            text: sourceHtml,
+            sourceLanguage,
+            targetLanguage,
+            format: 'html',
+            settings,
+          })
+
+    translatedHtml = translatedCombined || ''
+    translatedText = normalizeText(cheerio.load(`<body>${translatedHtml}</body>`, { xmlMode: true })('body').text())
+  } else {
+    const translationBatch = await translateTexts(provider, previewBlocks, {
+      sourceLanguage,
+      targetLanguage,
+      settings,
+    })
+
+    translatedHtml = translationBatch.translations
+      .map(
+        (block, index) =>
+          `<${previewBlocks[index]?.tagName || 'p'}>${block}</${previewBlocks[index]?.tagName || 'p'}>`
+      )
+      .join('\n')
+    translatedText = translationBatch.translations
+      .map((block) => normalizeText(cheerio.load(`<body>${block}</body>`, { xmlMode: true })('body').text()))
+      .join('\n\n')
+  }
 
   return {
     provider,
     sourceText: previewBlocks.map((block) => block.plainText).join('\n\n'),
-    translatedText: translationBatch.translations
-      .map((block) => normalizeText(cheerio.load(`<body>${block}</body>`, { xmlMode: true })('body').text()))
-      .join('\n\n'),
+    translatedText,
     sourceHtml,
     translatedHtml,
     sectionCount: new Set(previewBlocks.map((block) => block.sectionId)).size,

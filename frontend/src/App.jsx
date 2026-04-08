@@ -794,6 +794,20 @@ export default function App() {
     )
   }, [analysis, providers, settings])
 
+  const progressRuntimeMinutes = useMemo(() => {
+    if (!job?.startedAt) {
+      return 0
+    }
+    return Math.max(0.02, (Date.now() - new Date(job.startedAt).getTime()) / 60000)
+  }, [job])
+
+  const progressWordsPerMinute = useMemo(() => {
+    if (!job?.progress?.processedWords || !progressRuntimeMinutes) {
+      return 0
+    }
+    return Math.round(job.progress.processedWords / progressRuntimeMinutes)
+  }, [job, progressRuntimeMinutes])
+
   function updateSettings(section, field, value) {
     setSettings((current) => ({
       ...current,
@@ -1148,6 +1162,10 @@ export default function App() {
                 </div>
 
                 <div className="progress-grid">
+                  <div className="progress-box progress-box--accent">
+                    <strong>{job?.progress?.stage || 'processing'}</strong>
+                    <span>aktuální fáze</span>
+                  </div>
                   <div className="progress-box">
                     <strong>{formatNumber(job?.progress?.processedWords)}</strong>
                     <span>přeložených slov</span>
@@ -1173,6 +1191,14 @@ export default function App() {
                   <div className="progress-box">
                     <strong>{job?.progress?.cacheHits || 0}</strong>
                     <span>cache hitů</span>
+                  </div>
+                  <div className="progress-box">
+                    <strong>{formatNumber(progressWordsPerMinute)}</strong>
+                    <span>slov za minutu</span>
+                  </div>
+                  <div className="progress-box">
+                    <strong>{progressRuntimeMinutes.toFixed(1)} min</strong>
+                    <span>doba běhu</span>
                   </div>
                 </div>
 
