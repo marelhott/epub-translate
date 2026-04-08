@@ -625,8 +625,8 @@ export default function App() {
   const [preview, setPreview] = useState(null)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [originalBookUrl, setOriginalBookUrl] = useState('')
-  const [translatedBookUrl, setTranslatedBookUrl] = useState('')
+  const [originalBookData, setOriginalBookData] = useState(null)
+  const [translatedBookData, setTranslatedBookData] = useState(null)
   const [translatedBlob, setTranslatedBlob] = useState(null)
   const [settings, setSettings] = useState(() => loadStoredSettings())
   const [diagnostics, setDiagnostics] = useState({})
@@ -662,17 +662,6 @@ export default function App() {
 
     return () => window.clearTimeout(timeout)
   }, [providers, settings])
-
-  useEffect(() => {
-    return () => {
-      if (originalBookUrl) {
-        URL.revokeObjectURL(originalBookUrl)
-      }
-      if (translatedBookUrl) {
-        URL.revokeObjectURL(translatedBookUrl)
-      }
-    }
-  }, [originalBookUrl, translatedBookUrl])
 
   useEffect(() => {
     if (!analysis?.sections) {
@@ -752,14 +741,9 @@ export default function App() {
             throw new Error('Nepodařilo se stáhnout výsledný EPUB.')
           }
           const blob = await downloadResponse.blob()
-          const nextUrl = URL.createObjectURL(blob)
+          const bookData = await blob.arrayBuffer()
           setTranslatedBlob(blob)
-          setTranslatedBookUrl((current) => {
-            if (current) {
-              URL.revokeObjectURL(current)
-            }
-            return nextUrl
-          })
+          setTranslatedBookData(bookData)
         }
 
         if (payload.status === 'failed') {
@@ -870,19 +854,8 @@ export default function App() {
       return
     }
 
-    const fileUrl = URL.createObjectURL(file)
-    setOriginalBookUrl((current) => {
-      if (current) {
-        URL.revokeObjectURL(current)
-      }
-      return fileUrl
-    })
-    setTranslatedBookUrl((current) => {
-      if (current) {
-        URL.revokeObjectURL(current)
-      }
-      return ''
-    })
+    setOriginalBookData(null)
+    setTranslatedBookData(null)
     setTranslatedBlob(null)
     setPreview(null)
     setJob(null)
@@ -895,6 +868,7 @@ export default function App() {
     formData.append('languageHint', 'en')
 
     try {
+      const fileBuffer = await file.arrayBuffer()
       const response = await fetch(apiUrl('/api/analyze'), {
         method: 'POST',
         body: formData,
@@ -905,6 +879,7 @@ export default function App() {
         throw new Error(payload.detail || payload.error || 'Analysis failed')
       }
 
+      setOriginalBookData(fileBuffer)
       setAnalysis(payload)
       setSelectedProvider('deepl')
       setStatusText('Kniha je připravená. Vidíš slova, znaky včetně mezer, strany i identifikovaný balast.')
@@ -1028,11 +1003,11 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
-  const rightMode = !originalBookUrl
+  const rightMode = !originalBookData
     ? 'empty'
     : job && job.status !== 'completed' && job.status !== 'failed'
       ? 'progress'
-      : translatedBookUrl
+      : translatedBookData
         ? 'translated'
         : 'original'
 
@@ -1129,14 +1104,14 @@ export default function App() {
 
             {rightMode === 'empty' ? (
               <div className="viewer-card">
-                <ReaderPane bookUrl="" title="" emptyLabel="Prázdný prohlížeč knihy" />
+                <ReaderPane bookData={null} title="" emptyLabel="Prázdný prohlížeč knihy" />
               </div>
             ) : null}
 
             {rightMode === 'original' ? (
               <div className="viewer-card">
                 <ReaderPane
-                  bookUrl={originalBookUrl}
+                  bookData={originalBookData}
                   title={analysis?.metadata?.title || 'Originál'}
                   emptyLabel="Prázdný prohlížeč knihy"
                 />
@@ -1213,7 +1188,7 @@ export default function App() {
             {rightMode === 'translated' ? (
               <div className="viewer-card">
                 <ReaderPane
-                  bookUrl={translatedBookUrl}
+                  bookData={translatedBookData}
                   title={`${analysis?.metadata?.title || 'Výsledek'} · přeložený náhled`}
                   emptyLabel="Přeložený náhled se objeví po dokončení"
                 />

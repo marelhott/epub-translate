@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-export function ReaderPane({ bookUrl, title, emptyLabel }) {
+export function ReaderPane({ bookUrl, bookData, title, emptyLabel }) {
   const containerRef = useRef(null)
   const renditionRef = useRef(null)
   const bookRef = useRef(null)
@@ -11,7 +11,7 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
     let cancelled = false
 
     async function mountReader() {
-      if (!containerRef.current || !bookUrl) {
+      if (!containerRef.current || (!bookUrl && !bookData)) {
         return
       }
 
@@ -24,7 +24,8 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
         }
 
         const ePub = epubModule.default
-        const book = ePub(bookUrl)
+        const source = bookData || bookUrl
+        const book = ePub(source)
         const rendition = book.renderTo(containerRef.current, {
           width: '100%',
           height: '100%',
@@ -70,10 +71,8 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
       }
       renditionRef.current = null
       bookRef.current = null
-      setLocationLabel('')
-      setReaderError('')
     }
-  }, [bookUrl])
+  }, [bookUrl, bookData])
 
   function goNext() {
     renditionRef.current?.next()
@@ -83,7 +82,7 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
     renditionRef.current?.prev()
   }
 
-  if (!bookUrl) {
+  if (!bookUrl && !bookData) {
     return (
       <div className="reader-empty">
         <strong>{emptyLabel}</strong>
