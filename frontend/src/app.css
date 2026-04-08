@@ -768,6 +768,11 @@
   overflow: auto;
 }
 
+.preview-copy--loading {
+  min-height: 108px;
+  align-content: center;
+}
+
 .preview-copy p {
   white-space: pre-wrap;
   line-height: 1.5;

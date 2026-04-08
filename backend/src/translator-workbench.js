@@ -725,6 +725,10 @@ function shouldUseOpenRouter(provider, settings = {}) {
   return openrouter.useForAll && Boolean(openrouter.apiKey) && ['openai', 'claude', 'google', 'glm'].includes(provider)
 }
 
+function providerTimeoutSignal(timeoutMs = 45000) {
+  return AbortSignal.timeout(timeoutMs)
+}
+
 async function translateWithOpenRouter({ provider, text, sourceLanguage, targetLanguage, format = 'text', settings }) {
   const openrouter = resolveOpenRouterConfig(settings)
   if (!openrouter.apiKey) {
@@ -738,6 +742,7 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
 
   const response = await fetch(`${String(openrouter.baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
+    signal: providerTimeoutSignal(),
     headers: {
       Authorization: `Bearer ${openrouter.apiKey}`,
       'Content-Type': 'application/json',
@@ -1315,6 +1320,7 @@ async function translateWithDeepL({ text, sourceLanguage, targetLanguage, format
 
   const response = await fetch(`${deepl.baseUrl}/v2/translate`, {
     method: 'POST',
+    signal: providerTimeoutSignal(),
     headers: {
       Authorization: `DeepL-Auth-Key ${apiKey}`,
       'Content-Type': 'application/json',
@@ -1361,6 +1367,7 @@ async function translateManyWithDeepL({
 
   const response = await fetch(`${deepl.baseUrl}/v2/translate`, {
     method: 'POST',
+    signal: providerTimeoutSignal(),
     headers: {
       Authorization: `DeepL-Auth-Key ${apiKey}`,
       'Content-Type': 'application/json',
@@ -1399,6 +1406,7 @@ async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, forma
 
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
+    signal: providerTimeoutSignal(),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
@@ -1454,6 +1462,7 @@ async function translateWithGoogle({ text, sourceLanguage, targetLanguage, forma
     `https://translation.googleapis.com/v3/projects/${project}/locations/global:translateText`,
     {
       method: 'POST',
+      signal: providerTimeoutSignal(),
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -1493,6 +1502,7 @@ async function translateManyWithGoogle({
     `https://translation.googleapis.com/v3/projects/${project}/locations/global:translateText`,
     {
       method: 'POST',
+      signal: providerTimeoutSignal(),
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -1525,6 +1535,7 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
+    signal: providerTimeoutSignal(),
     headers: {
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
@@ -1580,6 +1591,7 @@ async function translateWithGlm({ text, sourceLanguage, targetLanguage, format =
 
   const response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
+    signal: providerTimeoutSignal(),
     headers,
     body: JSON.stringify({
       model,
@@ -1623,6 +1635,7 @@ async function translateManyWithLibre({
   for (const text of texts) {
     const response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/translate`, {
       method: 'POST',
+      signal: providerTimeoutSignal(),
       headers: {
         'Content-Type': 'application/json',
       },

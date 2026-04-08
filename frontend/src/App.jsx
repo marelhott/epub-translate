@@ -1241,6 +1241,19 @@ export default function App() {
                 </div>
               </section>
             ) : null}
+
+            {isPreviewLoading && !preview ? (
+              <section className="sidebar-card">
+                <div className="sidebar-label">Preview sekcí</div>
+                <div className="preview-copy preview-copy--compact preview-copy--loading">
+                  <strong>Načítám preview…</strong>
+                  <span>
+                    Provider {providers.find((item) => item.id === selectedProvider)?.label || selectedProvider} právě
+                    překládá ukázku dvou stran.
+                  </span>
+                </div>
+              </section>
+            ) : null}
           </aside>
         </div>
       </main>
