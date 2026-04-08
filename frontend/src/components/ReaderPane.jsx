@@ -20,6 +20,27 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
   useEffect(() => {
     let cancelled = false
 
+    async function displayWithFallback(rendition, href) {
+      const candidates = [href, href ? href.split('/').pop() : '', undefined].filter(
+        (candidate, index, array) => array.findIndex((item) => item === candidate) === index
+      )
+
+      let lastError = null
+      for (const candidate of candidates) {
+        try {
+          await rendition.display(candidate)
+          return true
+        } catch (error) {
+          lastError = error
+        }
+      }
+
+      if (lastError) {
+        throw lastError
+      }
+      return false
+    }
+
     async function mountReader() {
       if (!containerRef.current || (!bookUrl && !bookData)) {
         return
@@ -58,7 +79,7 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
         })
 
         await book.ready
-        await rendition.display(initialLocation || undefined)
+        await displayWithFallback(rendition, initialLocation || '')
       } catch (error) {
         if (!cancelled) {
           setReaderError(error?.message || 'Náhled EPUB se nepodařilo otevřít.')
@@ -96,7 +117,23 @@ export function ReaderPane({ bookUrl, bookData, title, emptyLabel, initialLocati
     if (!href) {
       return
     }
-    renditionRef.current?.display(href)
+    const rendition = renditionRef.current
+    if (!rendition) {
+      return
+    }
+
+    ;(async () => {
+      try {
+        setReaderError('')
+        await rendition.display(href)
+      } catch {
+        try {
+          await rendition.display(href.split('/').pop())
+        } catch (error) {
+          setReaderError(error?.message || 'Na zvolenou část knihy se nepodařilo skočit.')
+        }
+      }
+    })()
   }
 
   if (!bookUrl && !bookData) {
