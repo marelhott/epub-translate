@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { ReaderPane } from './components/ReaderPane'
 import './app.css'
@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS = {
     baseUrl: 'https://openrouter.ai/api/v1',
     useForAll: true,
     openaiModel: 'openai/gpt-5.4',
-    claudeModel: 'anthropic/claude-sonnet-4.6',
+    claudeModel: 'anthropic/claude-sonnet-4-6',
     googleModel: 'google/gemini-2.5-pro',
     glmModel: 'z-ai/glm-5',
   },
@@ -37,7 +37,7 @@ const DEFAULT_SETTINGS = {
   },
   claude: {
     apiKey: '',
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-6',
   },
   glm: {
     apiKey: '',
@@ -168,6 +168,60 @@ function apiUrl(path) {
     return `/_/backend${path}`
   }
   return path
+}
+
+async function parseJsonSafely(response) {
+  const text = await response.text()
+  if (!text) {
+    return null
+  }
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    return { detail: text }
+  }
+}
+
+function sanitizePreviewHtml(html) {
+  if (typeof window === 'undefined' || !html) {
+    return html || ''
+  }
+
+  const template = window.document.createElement('template')
+  template.innerHTML = html
+  const blockedTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'])
+
+  const walker = window.document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT)
+  const nodes = []
+  let current = walker.currentNode
+
+  while (current) {
+    nodes.push(current)
+    current = walker.nextNode()
+  }
+
+  for (const node of nodes) {
+    const tagName = node.tagName?.toLowerCase?.() || ''
+    if (blockedTags.has(tagName)) {
+      node.remove()
+      continue
+    }
+
+    for (const attr of [...node.attributes]) {
+      const name = attr.name.toLowerCase()
+      const value = attr.value || ''
+      if (name.startsWith('on')) {
+        node.removeAttribute(attr.name)
+        continue
+      }
+      if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(value)) {
+        node.removeAttribute(attr.name)
+      }
+    }
+  }
+
+  return template.innerHTML
 }
 
 function summarizeSections(sections = []) {
@@ -579,6 +633,7 @@ export default function App() {
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
   const [settingsSavedAt, setSettingsSavedAt] = useState('')
   const [settingsSaveError, setSettingsSaveError] = useState('')
+  const pollingRef = useRef({ jobId: '', startedAt: 0, failures: 0 })
   const [filters, setFilters] = useState({
     includeMain: true,
     includeFront: false,
@@ -652,18 +707,37 @@ export default function App() {
 
   useEffect(() => {
     if (!job?.id || job.status === 'completed' || job.status === 'failed') {
+      pollingRef.current = { jobId: '', startedAt: 0, failures: 0 }
       return undefined
     }
 
+    if (pollingRef.current.jobId !== job.id) {
+      pollingRef.current = { jobId: job.id, startedAt: Date.now(), failures: 0 }
+    }
+
     const interval = window.setInterval(async () => {
+      if (Date.now() - pollingRef.current.startedAt > 1000 * 60 * 30) {
+        window.clearInterval(interval)
+        setError('Překlad překročil maximální dobu čekání. Zkus provider znovu nebo nejdřív preview.')
+        setStatusText('Překlad trvá příliš dlouho. Ověř provider nebo spusť job znovu.')
+        return
+      }
+
       try {
         const response = await fetch(apiUrl(`/api/jobs/${job.id}`))
-        
-        const payload = await response.json()
+
         if (!response.ok) {
+          pollingRef.current.failures += 1
           return
         }
 
+        const payload = await parseJsonSafely(response)
+        if (!payload) {
+          pollingRef.current.failures += 1
+          return
+        }
+
+        pollingRef.current.failures = 0
         setJob(payload)
         if (payload.status === 'completed') {
           setStatusText('Překlad je hotový. Vpravo už vidíš přeložený náhled a můžeš stáhnout čistý EPUB.')
@@ -674,6 +748,9 @@ export default function App() {
           })
 
           const downloadResponse = await fetch(apiUrl(`/api/jobs/${payload.id}/download`))
+          if (!downloadResponse.ok) {
+            throw new Error('Nepodařilo se stáhnout výsledný EPUB.')
+          }
           const blob = await downloadResponse.blob()
           const nextUrl = URL.createObjectURL(blob)
           setTranslatedBlob(blob)
@@ -689,8 +766,13 @@ export default function App() {
           setError(payload.error || 'Překlad selhal.')
           setStatusText('Překlad selhal. Zkontroluj provider, API klíče nebo zkus nejdřív preview.')
         }
-      } catch {
-        // Ignore transient polling issues.
+      } catch (pollError) {
+        pollingRef.current.failures += 1
+        if (pollingRef.current.failures >= 5) {
+          window.clearInterval(interval)
+          setError(pollError.message || 'Spojení s překladem se opakovaně přerušilo.')
+          setStatusText('Spojení s překladem se opakovaně přerušilo. Zkus obnovit stav nebo spustit job znovu.')
+        }
       }
     }, 1000)
 
@@ -757,9 +839,11 @@ export default function App() {
           settings: sanitizeSettings(nextSettings),
         }),
       })
-      const payload = await response.json()
+      const payload = await parseJsonSafely(response)
       if (response.ok) {
         setDiagnostics(payload)
+      } else {
+        throw new Error(payload?.detail || payload?.error || 'Diagnostiku se nepodařilo načíst.')
       }
     } finally {
       setDiagnosticsLoading(false)
@@ -801,7 +885,7 @@ export default function App() {
         method: 'POST',
         body: formData,
       })
-      const payload = await response.json()
+      const payload = await parseJsonSafely(response)
 
       if (!response.ok) {
         throw new Error(payload.detail || payload.error || 'Analysis failed')
@@ -862,7 +946,7 @@ export default function App() {
           settings: sanitizeSettings(settings),
         }),
       })
-      const payload = await response.json()
+      const payload = await parseJsonSafely(response)
 
       if (!response.ok) {
         throw new Error(payload.detail || payload.error || 'Preview failed')
@@ -902,7 +986,7 @@ export default function App() {
           settings: sanitizeSettings(settings),
         }),
       })
-      const payload = await response.json()
+      const payload = await parseJsonSafely(response)
 
       if (!response.ok) {
         throw new Error(payload.detail || payload.error || 'Export failed')
@@ -1236,7 +1320,7 @@ export default function App() {
                   </strong>
                   <div
                     className="preview-html preview-html--compact"
-                    dangerouslySetInnerHTML={{ __html: preview.translatedHtml || '' }}
+                    dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(preview.translatedHtml || '') }}
                   />
                 </div>
               </section>

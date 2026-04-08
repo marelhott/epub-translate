@@ -39,6 +39,22 @@ function outputFilePath(jobId, fileName) {
   return join(OUTPUTS_DIR, `${jobId}__${fileName}`)
 }
 
+function hasZipSignature(buffer) {
+  return Boolean(buffer?.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b)
+}
+
+function looksLikeEpubUpload(file) {
+  const fileName = String(file?.originalname || '').toLowerCase()
+  const mimeType = String(file?.mimetype || '').toLowerCase()
+  const allowedMimeTypes = new Set([
+    'application/epub+zip',
+    'application/zip',
+    'application/octet-stream',
+  ])
+
+  return fileName.endsWith('.epub') && hasZipSignature(file?.buffer) && allowedMimeTypes.has(mimeType || 'application/octet-stream')
+}
+
 function readJob(jobId) {
   const path = jobFilePath(jobId)
   if (!existsSync(path)) {
@@ -250,7 +266,7 @@ async function diagnoseProviders(settings = {}) {
   }
 
   if (settings?.openrouter?.useForAll && openrouterKey) {
-    const model = settings?.openrouter?.claudeModel || 'anthropic/claude-sonnet-4.6'
+    const model = settings?.openrouter?.claudeModel || 'anthropic/claude-sonnet-4-6'
     diagnostics.claude = openrouterModelReady(model)
       ? { status: 'ready', label: 'Ready', detail: `${model} online přes OpenRouter.` }
       : { status: 'unavailable', label: 'Model offline', detail: `${model} není dostupný v OpenRouteru.` }
@@ -513,6 +529,13 @@ app.post('/api/providers/diagnostics', async (req, res) => {
 app.post('/api/analyze', upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Chybí EPUB soubor.' })
+  }
+
+  if (!looksLikeEpubUpload(req.file)) {
+    return res.status(400).json({
+      error: 'Neplatný EPUB soubor.',
+      detail: 'Nahraj soubor .epub se ZIP strukturou.',
+    })
   }
 
   try {

@@ -488,8 +488,26 @@ function findBoundary(sections, direction) {
 }
 
 function withBoundaryFlags(sections, startId, endId) {
+  if (!sections.length) {
+    return sections
+  }
+
   const startIndex = sections.findIndex((section) => section.id === startId)
   const endIndex = sections.findIndex((section) => section.id === endId)
+
+  if (startIndex === -1 || endIndex === -1 || startIndex > endIndex) {
+    const fallbackSections = sections.filter(
+      (section) => section.kind !== 'front_matter' && section.kind !== 'back_matter'
+    )
+    const fallbackIds = new Set(
+      (fallbackSections.length ? fallbackSections : sections).map((section) => section.id)
+    )
+
+    return sections.map((section) => ({
+      ...section,
+      includeInTranslation: fallbackIds.has(section.id),
+    }))
+  }
 
   return sections.map((section, index) => {
     const inside =
@@ -647,21 +665,29 @@ async function retryHtmlTranslator(translator, basePayload, buildRetryPayload) {
   return basePayload.text
 }
 
-function settingsFingerprint(settings = {}) {
+function settingsFingerprint(settings = {}, provider = '') {
   if (!settings || typeof settings !== 'object') {
     return ''
   }
 
-  const normalized = {
-    openrouter: {
+  const normalized = {}
+  const usesOpenRouter =
+    Boolean(settings.openrouter?.useForAll) && ['openai', 'claude', 'google', 'glm'].includes(provider)
+
+  if (usesOpenRouter) {
+    normalized.openrouter = {
       baseUrl: settings.openrouter?.baseUrl || '',
-      useForAll: Boolean(settings.openrouter?.useForAll),
-      openaiModel: settings.openrouter?.openaiModel || '',
-      claudeModel: settings.openrouter?.claudeModel || '',
-      googleModel: settings.openrouter?.googleModel || '',
-      glmModel: settings.openrouter?.glmModel || settings.openrouter?.llamaModel || '',
-    },
-    deepl: {
+      model:
+        provider === 'openai'
+          ? settings.openrouter?.openaiModel || ''
+          : provider === 'claude'
+            ? settings.openrouter?.claudeModel || ''
+            : provider === 'google'
+              ? settings.openrouter?.googleModel || ''
+              : settings.openrouter?.glmModel || settings.openrouter?.llamaModel || '',
+    }
+  } else if (provider === 'deepl') {
+    normalized.deepl = {
       baseUrl: settings.deepl?.baseUrl || '',
       formality: settings.deepl?.formality || '',
       modelType: settings.deepl?.modelType || '',
@@ -669,23 +695,28 @@ function settingsFingerprint(settings = {}) {
       preserveFormatting: Boolean(settings.deepl?.preserveFormatting),
       context: settings.deepl?.context || '',
       customInstructions: settings.deepl?.customInstructions || '',
-    },
-    openai: {
+    }
+  } else if (provider === 'openai') {
+    normalized.openai = {
       model: settings.openai?.model || '',
-    },
-    google: {
+    }
+  } else if (provider === 'google') {
+    normalized.google = {
       project: settings.google?.project || '',
-    },
-    claude: {
+    }
+  } else if (provider === 'claude') {
+    normalized.claude = {
       model: settings.claude?.model || '',
-    },
-    glm: {
+    }
+  } else if (provider === 'glm') {
+    normalized.glm = {
       baseUrl: settings.glm?.baseUrl || '',
       model: settings.glm?.model || '',
-    },
-    libre: {
+    }
+  } else if (provider === 'libre') {
+    normalized.libre = {
       baseUrl: settings.libre?.baseUrl || '',
-    },
+    }
   }
 
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex')
@@ -701,7 +732,7 @@ function resolveOpenRouterConfig(settings = {}) {
         : String(process.env.OPENROUTER_USE_FOR_ALL || 'true') !== 'false',
     openaiModel: settings?.openrouter?.openaiModel || process.env.OPENROUTER_OPENAI_MODEL || 'openai/gpt-5.4',
     claudeModel:
-      settings?.openrouter?.claudeModel || process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4.6',
+      settings?.openrouter?.claudeModel || process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4-6',
     googleModel:
       settings?.openrouter?.googleModel || process.env.OPENROUTER_GOOGLE_MODEL || 'google/gemini-2.5-pro',
     glmModel:
@@ -727,6 +758,18 @@ function shouldUseOpenRouter(provider, settings = {}) {
 
 function providerTimeoutSignal(timeoutMs = 45000) {
   return AbortSignal.timeout(timeoutMs)
+}
+
+function normalizeProviderError(error, provider) {
+  const message = error instanceof Error ? error.message : String(error || 'Unknown error')
+  if (
+    error?.name === 'AbortError' ||
+    error?.name === 'TimeoutError' ||
+    /aborted|timeout/i.test(message)
+  ) {
+    return new Error(`Provider ${provider} neodpověděl do 45 sekund.`)
+  }
+  return error instanceof Error ? error : new Error(message)
 }
 
 async function translateWithOpenRouter({ provider, text, sourceLanguage, targetLanguage, format = 'text', settings }) {
@@ -802,7 +845,7 @@ async function translateTexts(provider, texts, options) {
         provider,
         sourceLanguage: options.sourceLanguage || '',
         targetLanguage: options.targetLanguage || '',
-        settings: settingsFingerprint(options.settings),
+        settings: settingsFingerprint(options.settings, provider),
         format: item.format,
         text: item.source,
       }))
@@ -834,88 +877,105 @@ async function translateTexts(provider, texts, options) {
   }
 
   if (provider === 'deepl') {
-    const missingTranslations = await translateManyWithDeepL({
-      texts: misses.map((item) => item.source),
-      sourceLanguage: options.sourceLanguage,
-      targetLanguage: options.targetLanguage,
-      format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
-      settings: options.settings,
-    })
-    misses.forEach((item, missIndex) => {
-      const translation = missingTranslations[missIndex] || ''
-      translations[item.index] = translation
-      cache[item.key] = {
-        provider,
-        sourceLanguage: options.sourceLanguage || '',
-        targetLanguage: options.targetLanguage || '',
-        translation,
-        updatedAt: new Date().toISOString(),
+    try {
+      const missingTranslations = await translateManyWithDeepL({
+        texts: misses.map((item) => item.source),
+        sourceLanguage: options.sourceLanguage,
+        targetLanguage: options.targetLanguage,
+        format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
+        settings: options.settings,
+      })
+      misses.forEach((item, missIndex) => {
+        const translation = missingTranslations[missIndex] || ''
+        translations[item.index] = translation
+        cache[item.key] = {
+          provider,
+          sourceLanguage: options.sourceLanguage || '',
+          targetLanguage: options.targetLanguage || '',
+          translation,
+          updatedAt: new Date().toISOString(),
+        }
+      })
+      if (misses.length) {
+        saveCache(cache)
       }
-    })
-    if (misses.length) {
-      saveCache(cache)
+      return { translations, cacheHits, cacheMisses: misses.length }
+    } catch (error) {
+      throw normalizeProviderError(error, provider)
     }
-    return { translations, cacheHits, cacheMisses: misses.length }
   }
 
   if (provider === 'google') {
-    const missingTranslations = await translateManyWithGoogle({
-      texts: misses.map((item) => item.source),
-      sourceLanguage: options.sourceLanguage,
-      targetLanguage: options.targetLanguage,
-      format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
-      settings: options.settings,
-    })
-    misses.forEach((item, missIndex) => {
-      const translation = missingTranslations[missIndex] || ''
-      translations[item.index] = translation
-      cache[item.key] = {
-        provider,
-        sourceLanguage: options.sourceLanguage || '',
-        targetLanguage: options.targetLanguage || '',
-        translation,
-        updatedAt: new Date().toISOString(),
+    try {
+      const missingTranslations = await translateManyWithGoogle({
+        texts: misses.map((item) => item.source),
+        sourceLanguage: options.sourceLanguage,
+        targetLanguage: options.targetLanguage,
+        format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
+        settings: options.settings,
+      })
+      misses.forEach((item, missIndex) => {
+        const translation = missingTranslations[missIndex] || ''
+        translations[item.index] = translation
+        cache[item.key] = {
+          provider,
+          sourceLanguage: options.sourceLanguage || '',
+          targetLanguage: options.targetLanguage || '',
+          translation,
+          updatedAt: new Date().toISOString(),
+        }
+      })
+      if (misses.length) {
+        saveCache(cache)
       }
-    })
-    if (misses.length) {
-      saveCache(cache)
+      return { translations, cacheHits, cacheMisses: misses.length }
+    } catch (error) {
+      throw normalizeProviderError(error, provider)
     }
-    return { translations, cacheHits, cacheMisses: misses.length }
   }
 
   if (provider === 'libre') {
-    const missingTranslations = await translateManyWithLibre({
-      texts: misses.map((item) => item.source),
-      sourceLanguage: options.sourceLanguage,
-      targetLanguage: options.targetLanguage,
-      format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
-      settings: options.settings,
-    })
-    misses.forEach((item, missIndex) => {
-      const translation = missingTranslations[missIndex] || ''
-      translations[item.index] = translation
-      cache[item.key] = {
-        provider,
-        sourceLanguage: options.sourceLanguage || '',
-        targetLanguage: options.targetLanguage || '',
-        translation,
-        updatedAt: new Date().toISOString(),
+    try {
+      const missingTranslations = await translateManyWithLibre({
+        texts: misses.map((item) => item.source),
+        sourceLanguage: options.sourceLanguage,
+        targetLanguage: options.targetLanguage,
+        format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
+        settings: options.settings,
+      })
+      misses.forEach((item, missIndex) => {
+        const translation = missingTranslations[missIndex] || ''
+        translations[item.index] = translation
+        cache[item.key] = {
+          provider,
+          sourceLanguage: options.sourceLanguage || '',
+          targetLanguage: options.targetLanguage || '',
+          translation,
+          updatedAt: new Date().toISOString(),
+        }
+      })
+      if (misses.length) {
+        saveCache(cache)
       }
-    })
-    if (misses.length) {
-      saveCache(cache)
+      return { translations, cacheHits, cacheMisses: misses.length }
+    } catch (error) {
+      throw normalizeProviderError(error, provider)
     }
-    return { translations, cacheHits, cacheMisses: misses.length }
   }
 
   for (const item of misses) {
-    const output = await translators[provider]({
-      text: item.source,
-      sourceLanguage: options.sourceLanguage,
-      targetLanguage: options.targetLanguage,
-      format: item.format,
-      settings: options.settings,
-    })
+    let output = ''
+    try {
+      output = await translators[provider]({
+        text: item.source,
+        sourceLanguage: options.sourceLanguage,
+        targetLanguage: options.targetLanguage,
+        format: item.format,
+        settings: options.settings,
+      })
+    } catch (error) {
+      throw normalizeProviderError(error, provider)
+    }
     translations[item.index] = output
     cache[item.key] = {
       provider,
@@ -1444,7 +1504,7 @@ async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, forma
   }
 
   const payload = await response.json()
-  return payload.output_text || ''
+  return payload.output_text || payload.output?.[0]?.content?.[0]?.text || ''
 }
 
 async function translateWithGoogle({ text, sourceLanguage, targetLanguage, format = 'text', settings }) {
@@ -1543,8 +1603,8 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
     },
     body: JSON.stringify({
       model:
-        settings?.claude?.model || process.env.ANTHROPIC_TRANSLATION_MODEL || 'claude-sonnet-4-5',
-      max_tokens: 2000,
+        settings?.claude?.model || process.env.ANTHROPIC_TRANSLATION_MODEL || 'claude-sonnet-4-6',
+      max_tokens: format === 'html' ? 8192 : 4096,
       system:
         format === 'html'
           ? 'Translate non-fiction book text inside HTML fragments. Preserve the exact HTML tags and structure, translate only the visible text, and output HTML only.'
