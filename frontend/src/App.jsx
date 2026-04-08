@@ -166,6 +166,13 @@ function sanitizeSettings(settings) {
   }
 }
 
+function apiUrl(path) {
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')) {
+    return `/_/backend${path}`
+  }
+  return path
+}
+
 function ProviderOption({ provider, active, cost, diagnostic, onSelect }) {
   const diagnosticLabel = diagnostic?.status === 'ready' ? 'Ready' : diagnostic?.label || 'Není nastaveno'
   return (
@@ -503,7 +510,7 @@ export default function App() {
 
   useEffect(() => {
     async function loadProviders() {
-      const response = await fetch('/api/providers')
+      const response = await fetch(apiUrl('/api/providers'))
       const payload = await response.json()
       setProviders(payload)
     }
@@ -582,7 +589,8 @@ export default function App() {
 
     const interval = window.setInterval(async () => {
       try {
-        const response = await fetch(`/api/jobs/${job.id}`)
+        const response = await fetch(apiUrl(`/api/jobs/${job.id}`))
+        
         const payload = await response.json()
         if (!response.ok) {
           return
@@ -597,7 +605,7 @@ export default function App() {
             cacheMisses: payload.progress?.cacheMisses || 0,
           })
 
-          const downloadResponse = await fetch(`/api/jobs/${payload.id}/download`)
+          const downloadResponse = await fetch(apiUrl(`/api/jobs/${payload.id}/download`))
           const blob = await downloadResponse.blob()
           const nextUrl = URL.createObjectURL(blob)
           setTranslatedBlob(blob)
@@ -657,7 +665,8 @@ export default function App() {
   async function refreshDiagnostics() {
     setDiagnosticsLoading(true)
     try {
-      const response = await fetch('/api/providers/diagnostics', {
+      const response = await fetch(apiUrl('/api/providers/diagnostics'), {
+        
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -704,7 +713,7 @@ export default function App() {
     formData.append('languageHint', 'en')
 
     try {
-      const response = await fetch('/api/analyze', {
+      const response = await fetch(apiUrl('/api/analyze'), {
         method: 'POST',
         body: formData,
       })
@@ -766,7 +775,7 @@ export default function App() {
     setStatusText('Připravuju dvoustránkové preview překladu pro vybraný provider.')
 
     try {
-      const response = await fetch('/api/translate-preview', {
+      const response = await fetch(apiUrl('/api/translate-preview'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -805,7 +814,7 @@ export default function App() {
     setStatusText('Překlad běží. Vpravo sleduješ přesné procento, slova i reálný odhad stran.')
 
     try {
-      const response = await fetch('/api/jobs', {
+      const response = await fetch(apiUrl('/api/jobs'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
