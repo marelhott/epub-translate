@@ -5,6 +5,7 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
   const renditionRef = useRef(null)
   const bookRef = useRef(null)
   const [locationLabel, setLocationLabel] = useState('')
+  const [readerError, setReaderError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -14,34 +15,44 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
         return
       }
 
-      const epubModule = await import('epubjs')
-      if (cancelled) {
-        return
-      }
-
-      const ePub = epubModule.default
-      const book = ePub(bookUrl)
-      const rendition = book.renderTo(containerRef.current, {
-        width: '100%',
-        height: '100%',
-        spread: 'none',
-      })
-
-      bookRef.current = book
-      renditionRef.current = rendition
-
-      rendition.on('relocated', (location) => {
-        const displayed = location?.start?.displayed
-        if (displayed?.page && displayed?.total) {
-          setLocationLabel(`Strana ${displayed.page} z ${displayed.total}`)
-        } else if (location?.start?.href) {
-          setLocationLabel(location.start.href)
-        } else {
-          setLocationLabel('')
+      try {
+        setReaderError('')
+        containerRef.current.innerHTML = ''
+        const epubModule = await import('epubjs')
+        if (cancelled) {
+          return
         }
-      })
 
-      await rendition.display()
+        const ePub = epubModule.default
+        const book = ePub(bookUrl)
+        const rendition = book.renderTo(containerRef.current, {
+          width: '100%',
+          height: '100%',
+          spread: 'none',
+          flow: 'paginated',
+        })
+
+        bookRef.current = book
+        renditionRef.current = rendition
+
+        rendition.on('relocated', (location) => {
+          const displayed = location?.start?.displayed
+          if (displayed?.page && displayed?.total) {
+            setLocationLabel(`Strana ${displayed.page} z ${displayed.total}`)
+          } else if (location?.start?.href) {
+            setLocationLabel(location.start.href)
+          } else {
+            setLocationLabel('')
+          }
+        })
+
+        await book.ready
+        await rendition.display()
+      } catch (error) {
+        if (!cancelled) {
+          setReaderError(error?.message || 'Náhled EPUB se nepodařilo otevřít.')
+        }
+      }
     }
 
     mountReader()
@@ -54,9 +65,13 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
       try {
         bookRef.current?.destroy()
       } catch {}
+      if (containerRef.current) {
+        containerRef.current.innerHTML = ''
+      }
       renditionRef.current = null
       bookRef.current = null
       setLocationLabel('')
+      setReaderError('')
     }
   }, [bookUrl])
 
@@ -94,7 +109,14 @@ export function ReaderPane({ bookUrl, title, emptyLabel }) {
         </div>
       </div>
 
-      <div className="reader-stage" ref={containerRef} />
+      {readerError ? (
+        <div className="reader-empty">
+          <strong>Náhled EPUB se nepodařilo otevřít</strong>
+          <span>{readerError}</span>
+        </div>
+      ) : (
+        <div className="reader-stage" ref={containerRef} />
+      )}
     </div>
   )
 }

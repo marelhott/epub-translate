@@ -296,10 +296,92 @@ function extractBodyText(html) {
       links,
       listItems,
       pageNumberish,
+      characterCount: plainText.length,
       wordCount: plainText ? plainText.split(/\s+/).length : 0,
       paragraphCount: paragraphs.length,
     },
   }
+}
+
+function detectBallastCategory(section) {
+  const haystack = `${section.title} ${section.plainText.slice(0, 600)}`.toLowerCase()
+
+  if (containsKeyword(haystack, 'contents') || containsKeyword(haystack, 'table of contents') || containsKeyword(haystack, 'obsah')) {
+    return 'Obsah'
+  }
+  if (containsKeyword(haystack, 'index') || containsKeyword(haystack, 'rejstřík')) {
+    return 'Rejstřík'
+  }
+  if (
+    containsKeyword(haystack, 'notes') ||
+    containsKeyword(haystack, 'endnotes') ||
+    containsKeyword(haystack, 'poznámky')
+  ) {
+    return 'Poznámky'
+  }
+  if (
+    containsKeyword(haystack, 'bibliography') ||
+    containsKeyword(haystack, 'references') ||
+    containsKeyword(haystack, 'sources') ||
+    containsKeyword(haystack, 'prameny') ||
+    containsKeyword(haystack, 'works cited') ||
+    containsKeyword(haystack, 'literature')
+  ) {
+    return 'Zdroje a literatura'
+  }
+  if (containsKeyword(haystack, 'acknowledgements') || containsKeyword(haystack, 'poděkování')) {
+    return 'Poděkování'
+  }
+  if (containsKeyword(haystack, 'dedication') || containsKeyword(haystack, 'věnování')) {
+    return 'Věnování'
+  }
+  if (
+    containsKeyword(haystack, 'preface') ||
+    containsKeyword(haystack, 'foreword') ||
+    containsKeyword(haystack, 'introduction') ||
+    containsKeyword(haystack, 'předmluva')
+  ) {
+    return 'Úvodní texty'
+  }
+  if (
+    containsKeyword(haystack, 'copyright') ||
+    containsKeyword(haystack, 'title page') ||
+    containsKeyword(haystack, 'imprint') ||
+    containsKeyword(haystack, 'about the author')
+  ) {
+    return 'Titulní a vydavatelské strany'
+  }
+  if (section.kind === 'front_matter') {
+    return 'Přední balast'
+  }
+  if (section.kind === 'back_matter') {
+    return 'Zadní balast'
+  }
+  return 'Nezařazené'
+}
+
+function summarizeBallastSections(sections) {
+  const grouped = new Map()
+
+  for (const section of sections) {
+    const category = section.ballastCategory || detectBallastCategory(section)
+    const current = grouped.get(category) || {
+      label: category,
+      sectionCount: 0,
+      wordCount: 0,
+      characterCount: 0,
+      examples: [],
+    }
+    current.sectionCount += 1
+    current.wordCount += section.stats?.wordCount || 0
+    current.characterCount += section.stats?.characterCount || 0
+    if (current.examples.length < 3) {
+      current.examples.push(section.title)
+    }
+    grouped.set(category, current)
+  }
+
+  return [...grouped.values()].sort((left, right) => right.wordCount - left.wordCount)
 }
 
 function classifySection(section) {
@@ -1006,6 +1088,7 @@ export async function analyzeEpubBuffer(buffer, options = {}) {
     sections.push({
       ...baseSection,
       ...classified,
+      ballastCategory: detectBallastCategory({ ...baseSection, ...classified }),
       signals: [...classified.signals, ...trimmed.trimSignals],
     })
   }
@@ -1016,6 +1099,10 @@ export async function analyzeEpubBuffer(buffer, options = {}) {
 
   const mainSections = boundedSections.filter((section) => section.includeInTranslation)
   const skipped = boundedSections.filter((section) => !section.includeInTranslation)
+  const translatedWords = mainSections.reduce((sum, section) => sum + section.stats.wordCount, 0)
+  const translatedCharacters = mainSections.reduce((sum, section) => sum + (section.stats.characterCount || 0), 0)
+  const skippedWords = skipped.reduce((sum, section) => sum + section.stats.wordCount, 0)
+  const skippedCharacters = skipped.reduce((sum, section) => sum + (section.stats.characterCount || 0), 0)
 
   return {
     fileName: options.fileName || 'book.epub',
@@ -1036,13 +1123,14 @@ export async function analyzeEpubBuffer(buffer, options = {}) {
       totalSections: boundedSections.length,
       translatedSections: mainSections.length,
       skippedSections: skipped.length,
-      translatedWords: mainSections.reduce((sum, section) => sum + section.stats.wordCount, 0),
-      skippedWords: skipped.reduce((sum, section) => sum + section.stats.wordCount, 0),
+      translatedWords,
+      translatedCharacters,
+      skippedWords,
+      skippedCharacters,
+      totalCharacters: translatedCharacters + skippedCharacters,
       tailTrimmedSections: boundedSections.filter((section) => section.trim?.applied).length,
-      estimatedPages: Math.max(
-        1,
-        Math.ceil(mainSections.reduce((sum, section) => sum + section.stats.wordCount, 0) / 300)
-      ),
+      ballastBreakdown: summarizeBallastSections(skipped),
+      estimatedPages: Math.max(1, Math.ceil(translatedWords / 300)),
     },
     sections: boundedSections,
   }

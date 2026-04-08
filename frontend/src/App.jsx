@@ -50,10 +50,10 @@ const DEFAULT_SETTINGS = {
   },
   pricing: {
     deepl: 20,
-    openai: 8,
-    google: 20,
-    claude: 9,
-    glm: 0.8,
+    openai: 30,
+    google: 22,
+    claude: 28,
+    glm: 6,
     libre: 1.2,
   },
 }
@@ -145,13 +145,8 @@ function formatCurrency(value) {
   }).format(Number(value || 0))
 }
 
-function estimateCharacters(words) {
-  return Math.round(Number(words || 0) * 6)
-}
-
-function estimateCostEur(words, ratePerMillionChars) {
-  const chars = estimateCharacters(words)
-  return (chars / 1_000_000) * Number(ratePerMillionChars || 0)
+function estimateCostEur(characters, ratePerMillionChars) {
+  return (Number(characters || 0) / 1_000_000) * Number(ratePerMillionChars || 0)
 }
 
 function sanitizeSettings(settings) {
@@ -171,6 +166,45 @@ function apiUrl(path) {
     return `/_/backend${path}`
   }
   return path
+}
+
+function summarizeSections(sections = []) {
+  const translated = sections.filter((section) => section.includeInTranslation)
+  const skipped = sections.filter((section) => !section.includeInTranslation)
+  const translatedWords = translated.reduce((sum, section) => sum + (section.stats?.wordCount || 0), 0)
+  const translatedCharacters = translated.reduce((sum, section) => sum + (section.stats?.characterCount || 0), 0)
+  const skippedWords = skipped.reduce((sum, section) => sum + (section.stats?.wordCount || 0), 0)
+  const skippedCharacters = skipped.reduce((sum, section) => sum + (section.stats?.characterCount || 0), 0)
+  const ballastMap = new Map()
+
+  for (const section of skipped) {
+    const label = section.ballastCategory || 'Nezařazené'
+    const current = ballastMap.get(label) || {
+      label,
+      sectionCount: 0,
+      wordCount: 0,
+      characterCount: 0,
+      examples: [],
+    }
+    current.sectionCount += 1
+    current.wordCount += section.stats?.wordCount || 0
+    current.characterCount += section.stats?.characterCount || 0
+    if (current.examples.length < 3) {
+      current.examples.push(section.title)
+    }
+    ballastMap.set(label, current)
+  }
+
+  return {
+    translatedSections: translated.length,
+    skippedSections: skipped.length,
+    translatedWords,
+    translatedCharacters,
+    skippedWords,
+    skippedCharacters,
+    estimatedPages: Math.max(1, Math.ceil(translatedWords / 300)),
+    ballastBreakdown: [...ballastMap.values()].sort((left, right) => right.wordCount - left.wordCount),
+  }
 }
 
 function ProviderOption({ provider, active, cost, diagnostic, onSelect }) {
@@ -561,22 +595,12 @@ export default function App() {
         return { ...section, includeInTranslation: allowedByKind }
       })
 
-      const translatedWords = sections
-        .filter((section) => section.includeInTranslation)
-        .reduce((sum, section) => sum + section.stats.wordCount, 0)
-
       return {
         ...current,
         sections,
         summary: {
           ...current.summary,
-          translatedSections: sections.filter((section) => section.includeInTranslation).length,
-          skippedSections: sections.filter((section) => !section.includeInTranslation).length,
-          translatedWords,
-          skippedWords: sections
-            .filter((section) => !section.includeInTranslation)
-            .reduce((sum, section) => sum + section.stats.wordCount, 0),
-          estimatedPages: Math.max(1, Math.ceil(translatedWords / 300)),
+          ...summarizeSections(sections),
         },
       }
     })
@@ -635,11 +659,11 @@ export default function App() {
   )
 
   const providerCosts = useMemo(() => {
-    const translatedWords = analysis?.summary?.translatedWords || 0
+    const translatedCharacters = analysis?.summary?.translatedCharacters || 0
     return Object.fromEntries(
       providers.map((provider) => {
         const configuredRate = settings.pricing?.[provider.id] ?? provider.ratePerMillionCharsEur ?? 0
-        return [provider.id, estimateCostEur(translatedWords, configuredRate)]
+        return [provider.id, estimateCostEur(translatedCharacters, configuredRate)]
       })
     )
   }, [analysis, providers, settings])
@@ -725,7 +749,7 @@ export default function App() {
 
       setAnalysis(payload)
       setSelectedProvider('deepl')
-      setStatusText('Kniha je připravená. Dole už vidíš počet slov, stran i odhad ceny u každého provideru.')
+      setStatusText('Kniha je připravená. Vidíš slova, znaky včetně mezer, strany i identifikovaný balast.')
     } catch (uploadError) {
       setError(uploadError.message)
       setStatusText('Analýza selhala. Zkus jiný EPUB nebo zkontroluj backend.')
@@ -744,22 +768,12 @@ export default function App() {
           ? { ...section, includeInTranslation: !section.includeInTranslation }
           : section
       )
-      const translatedWords = sections
-        .filter((section) => section.includeInTranslation)
-        .reduce((sum, section) => sum + section.stats.wordCount, 0)
-
       return {
         ...current,
         sections,
         summary: {
           ...current.summary,
-          translatedSections: sections.filter((section) => section.includeInTranslation).length,
-          skippedSections: sections.filter((section) => !section.includeInTranslation).length,
-          translatedWords,
-          skippedWords: sections
-            .filter((section) => !section.includeInTranslation)
-            .reduce((sum, section) => sum + section.stats.wordCount, 0),
-          estimatedPages: Math.max(1, Math.ceil(translatedWords / 300)),
+          ...summarizeSections(sections),
         },
       }
     })
@@ -905,7 +919,6 @@ export default function App() {
           <section className="main-panel">
             <section className="sidebar-card workbench-toolbar">
               <div className="toolbar-upload">
-                <div className="sidebar-label">EPUB vstup</div>
                 <label className="upload-card upload-card--hero upload-card--compact">
                   <span className="upload-card-title">Nahrát EPUB</span>
                   <small>Načte obal, metadata, slova, strany a pracovní rozsah.</small>
@@ -938,12 +951,12 @@ export default function App() {
                         <span>slov</span>
                       </div>
                       <div className="metric-pill metric-pill--loud">
-                        <strong>{formatPages(analysis.summary.estimatedPages)}</strong>
-                        <span>stran</span>
+                        <strong>{formatNumber(analysis.summary.translatedCharacters)}</strong>
+                        <span>znaků vč. mezer</span>
                       </div>
                       <div className="metric-pill metric-pill--loud">
-                        <strong>{formatNumber(analysis.summary.translatedSections)}</strong>
-                        <span>sekcí</span>
+                        <strong>{formatPages(analysis.summary.estimatedPages)}</strong>
+                        <span>stran</span>
                       </div>
                     </div>
                   </>
@@ -1037,41 +1050,6 @@ export default function App() {
               </div>
             ) : null}
 
-            {preview ? (
-              <section className="bottom-note preview-panel">
-                <strong>Preview dvou stran</strong>
-                <span>
-                  {preview.provider} · {formatNumber(preview.wordCount)} slov · {formatPages(preview.pageCount)} strany
-                </span>
-                <div className="preview-grid">
-                  <div className="preview-copy">
-                    <strong>Originál · text</strong>
-                    <p>{preview.sourceText}</p>
-                  </div>
-                  <div className="preview-copy">
-                    <strong>Překlad · text</strong>
-                    <p>{preview.translatedText}</p>
-                  </div>
-                </div>
-                <div className="preview-grid">
-                  <div className="preview-copy">
-                    <strong>Originál · struktura</strong>
-                    <div
-                      className="preview-html"
-                      dangerouslySetInnerHTML={{ __html: preview.sourceHtml || '' }}
-                    />
-                  </div>
-                  <div className="preview-copy">
-                    <strong>Překlad · struktura</strong>
-                    <div
-                      className="preview-html"
-                      dangerouslySetInnerHTML={{ __html: preview.translatedHtml || '' }}
-                    />
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
             {exportMeta ? (
               <section className="bottom-note">
                 <strong>Export připraven</strong>
@@ -1125,10 +1103,30 @@ export default function App() {
                   <span>slov k překladu</span>
                 </div>
                 <div className="metric-pill">
+                  <strong>{formatNumber(analysis?.summary?.translatedCharacters || 0)}</strong>
+                  <span>znaků vč. mezer</span>
+                </div>
+                <div className="metric-pill">
                   <strong>{formatCurrency(providerCosts[selectedProvider] || 0)}</strong>
-                  <span>odhad pro aktivní provider</span>
+                  <span>odhad API pro aktivní provider</span>
                 </div>
               </div>
+
+              {analysis?.summary?.ballastBreakdown?.length ? (
+                <div className="ballast-box">
+                  <strong>Identifikovaný balast</strong>
+                  <div className="ballast-list">
+                    {analysis.summary.ballastBreakdown.map((item) => (
+                      <div key={item.label} className="ballast-item">
+                        <strong>{item.label}</strong>
+                        <span>
+                          {formatNumber(item.sectionCount)} sekcí · {formatNumber(item.wordCount)} slov
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               <button
                 type="button"
@@ -1155,7 +1153,9 @@ export default function App() {
                 Stáhnout EPUB
               </button>
             </section>
+          </aside>
 
+          <aside className="sidebar sidebar--sections">
             {analysis ? (
               <section className="sidebar-card">
                 <div className="sidebar-label">Sekce knihy</div>
@@ -1163,6 +1163,21 @@ export default function App() {
                   {analysis.sections.map((section) => (
                     <SectionToggle key={section.id} section={section} onToggle={toggleSection} />
                   ))}
+                </div>
+              </section>
+            ) : null}
+
+            {preview ? (
+              <section className="sidebar-card">
+                <div className="sidebar-label">Preview sekcí</div>
+                <div className="preview-copy preview-copy--compact">
+                  <strong>
+                    {preview.provider} · {formatNumber(preview.wordCount)} slov · {formatPages(preview.pageCount)} strany
+                  </strong>
+                  <div
+                    className="preview-html preview-html--compact"
+                    dangerouslySetInnerHTML={{ __html: preview.translatedHtml || '' }}
+                  />
                 </div>
               </section>
             ) : null}
