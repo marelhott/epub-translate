@@ -1235,6 +1235,55 @@ function normalizeDeepLTargetLanguage(targetLanguage) {
   return String(targetLanguage || 'CS').toUpperCase()
 }
 
+function normalizeDeepLSourceLanguage(sourceLanguage) {
+  if (!sourceLanguage) {
+    return undefined
+  }
+
+  const normalized = String(sourceLanguage).trim().replace(/_/g, '-').toUpperCase()
+  const base = normalized.split('-')[0]
+  const supported = new Set([
+    'AR',
+    'BG',
+    'CS',
+    'DA',
+    'DE',
+    'EL',
+    'EN',
+    'ES',
+    'ET',
+    'FI',
+    'FR',
+    'HU',
+    'ID',
+    'IT',
+    'JA',
+    'KO',
+    'LT',
+    'LV',
+    'NB',
+    'NL',
+    'PL',
+    'PT',
+    'RO',
+    'RU',
+    'SK',
+    'SL',
+    'SV',
+    'TR',
+    'UK',
+    'ZH',
+  ])
+
+  if (supported.has(normalized)) {
+    return normalized
+  }
+  if (supported.has(base)) {
+    return base
+  }
+  return undefined
+}
+
 function deepLCustomInstructionsForTarget(targetLanguage, deepl) {
   const target = normalizeDeepLTargetLanguage(targetLanguage)
   const supportedPrefixes = ['DE', 'EN', 'ES', 'FR', 'IT', 'JA', 'KO', 'ZH']
@@ -1261,6 +1310,7 @@ async function translateWithDeepL({ text, sourceLanguage, targetLanguage, format
   }
 
   const normalizedTargetLanguage = normalizeDeepLTargetLanguage(targetLanguage)
+  const normalizedSourceLanguage = normalizeDeepLSourceLanguage(sourceLanguage)
   const customInstructions = deepLCustomInstructionsForTarget(normalizedTargetLanguage, deepl)
 
   const response = await fetch(`${deepl.baseUrl}/v2/translate`, {
@@ -1272,7 +1322,7 @@ async function translateWithDeepL({ text, sourceLanguage, targetLanguage, format
     body: JSON.stringify({
       text: [text],
       target_lang: normalizedTargetLanguage,
-      source_lang: sourceLanguage ? String(sourceLanguage).toUpperCase() : undefined,
+      source_lang: normalizedSourceLanguage,
       context: deepl.context,
       formality: deepl.formality,
       model_type: deepl.modelType,
@@ -1306,6 +1356,7 @@ async function translateManyWithDeepL({
   }
 
   const normalizedTargetLanguage = normalizeDeepLTargetLanguage(targetLanguage)
+  const normalizedSourceLanguage = normalizeDeepLSourceLanguage(sourceLanguage)
   const customInstructions = deepLCustomInstructionsForTarget(normalizedTargetLanguage, deepl)
 
   const response = await fetch(`${deepl.baseUrl}/v2/translate`, {
@@ -1317,7 +1368,7 @@ async function translateManyWithDeepL({
     body: JSON.stringify({
       text: texts,
       target_lang: normalizedTargetLanguage,
-      source_lang: sourceLanguage ? String(sourceLanguage).toUpperCase() : undefined,
+      source_lang: normalizedSourceLanguage,
       context: deepl.context,
       formality: deepl.formality,
       model_type: deepl.modelType,
