@@ -2,8 +2,8 @@
    SHELL
 ════════════════════════════════════════════════════════ */
 .wb-shell {
-  width: min(100vw, 1720px);
-  max-width: 1720px;
+  width: min(100vw, 1600px);
+  max-width: 1600px;
   height: min(100vh, 980px);
   max-height: 980px;
   display: flex;
@@ -34,22 +34,6 @@
   display: flex;
   align-items: center;
 }
-
-.wb-traffic {
-  display: flex;
-  gap: 6px;
-  margin-right: 10px;
-}
-
-.wb-traffic-dot {
-  width: 10px;
-  height: 10px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-}
-
-.wb-traffic-dot--red { background: #ff5f57; }
-.wb-traffic-dot--amber { background: #febc2e; }
-.wb-traffic-dot--green { background: #28c840; }
 
 .wb-brand {
   display: flex;

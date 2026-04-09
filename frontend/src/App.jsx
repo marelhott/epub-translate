@@ -743,16 +743,11 @@ export default function App() {
         {/* ─── TOPBAR ─────────────────────────────────── */}
         <header className="wb-topbar">
           <div className="wb-topbar-left">
-            <div className="wb-traffic">
-              <span className="wb-traffic-dot wb-traffic-dot--red" />
-              <span className="wb-traffic-dot wb-traffic-dot--amber" />
-              <span className="wb-traffic-dot wb-traffic-dot--green" />
-            </div>
             <a className="wb-brand" href="/">
               <div className="wb-brand-mark">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><rect x="1" y="1" width="4" height="4"/><rect x="7" y="1" width="4" height="4"/><rect x="1" y="7" width="4" height="4"/><rect x="7" y="7" width="4" height="4"/></svg>
               </div>
-              <span className="wb-brand-name">Překládač ebooků</span>
+              <span className="wb-brand-name">EPUB TRANSLATOR</span>
             </a>
             <div className="wb-brand-sep" />
           </div>
