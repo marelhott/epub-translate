@@ -2,9 +2,9 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg:          #ECECEC;
-  --surface:     #FCFCFC;
-  --surface-2:   #FFFFFF;
+  --bg:          #F5F5F5;
+  --surface:     #FFFFFF;
+  --surface-2:   #FAFAFA;
   --border:      #E2E2E2;
   --border-2:    #BDBDBD;
   --text:        #0F0F0F;
@@ -14,9 +14,9 @@
   --accent-dim:  rgba(31,107,83,0.08);
   --red:         #A63A3A;
   --amber:       #8E6A1F;
-  --topbar-h:    44px;
-  --sidebar-l:   280px;
-  --sidebar-r:   316px;
+  --topbar-h:    46px;
+  --sidebar-l:   308px;
+  --sidebar-r:   308px;
   --font:        'Inter', -apple-system, 'SF Pro Text', system-ui, sans-serif;
   --mono:        'JetBrains Mono', 'SF Mono', Menlo, monospace;
 

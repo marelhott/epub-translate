@@ -2,10 +2,10 @@
    SHELL
 ════════════════════════════════════════════════════════ */
 .wb-shell {
-  width: min(100vw, 1720px);
-  max-width: 1720px;
-  height: min(100vh, 980px);
-  max-height: 980px;
+  width: min(100vw, 1360px);
+  max-width: 1360px;
+  height: min(100vh, 1080px);
+  max-height: 1080px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -19,9 +19,9 @@
 .wb-topbar {
   height: var(--topbar-h);
   min-height: var(--topbar-h);
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 8px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
@@ -29,27 +29,6 @@
   flex-shrink: 0;
   z-index: 10;
 }
-
-.wb-topbar-left {
-  display: flex;
-  align-items: center;
-}
-
-.wb-traffic {
-  display: flex;
-  gap: 6px;
-  margin-right: 10px;
-}
-
-.wb-traffic-dot {
-  width: 10px;
-  height: 10px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-}
-
-.wb-traffic-dot--red { background: #ff5f57; }
-.wb-traffic-dot--amber { background: #febc2e; }
-.wb-traffic-dot--green { background: #28c840; }
 
 .wb-brand {
   display: flex;
@@ -61,16 +40,16 @@
 }
 
 .wb-brand-mark {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   background: var(--text);
   display: grid;
   place-items: center;
 }
 
 .wb-brand-mark svg {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   fill: white;
 }
 
@@ -93,7 +72,6 @@
   align-items: center;
   gap: 0;
   flex: 1;
-  justify-content: center;
 }
 
 .wb-mode-pip {
@@ -101,7 +79,7 @@
   align-items: center;
   gap: 5px;
   padding: 0 8px;
-  height: 22px;
+  height: 20px;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.04em;
@@ -131,7 +109,6 @@
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  justify-content: flex-end;
 }
 
 .wb-topbar-runtime {

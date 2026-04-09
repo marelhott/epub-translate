@@ -742,36 +742,29 @@ export default function App() {
 
         {/* ─── TOPBAR ─────────────────────────────────── */}
         <header className="wb-topbar">
-          <div className="wb-topbar-left">
-            <div className="wb-traffic">
-              <span className="wb-traffic-dot wb-traffic-dot--red" />
-              <span className="wb-traffic-dot wb-traffic-dot--amber" />
-              <span className="wb-traffic-dot wb-traffic-dot--green" />
+          <a className="wb-brand" href="/">
+            <div className="wb-brand-mark">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><rect x="1" y="1" width="4" height="4"/><rect x="7" y="1" width="4" height="4"/><rect x="1" y="7" width="4" height="4"/><rect x="7" y="7" width="4" height="4"/></svg>
             </div>
-            <a className="wb-brand" href="/">
-              <div className="wb-brand-mark">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="white"><rect x="1" y="1" width="4" height="4"/><rect x="7" y="1" width="4" height="4"/><rect x="1" y="7" width="4" height="4"/><rect x="7" y="7" width="4" height="4"/></svg>
-              </div>
-              <span className="wb-brand-name">Překládač ebooků</span>
-            </a>
-            <div className="wb-brand-sep" />
-          </div>
+            <span className="wb-brand-name">Překládač ebooků</span>
+          </a>
+          <div className="wb-brand-sep" />
           <nav className="wb-topbar-modes">
             <span className={`wb-mode-pip ${modeActive.upload ? 'is-active' : ''}`}>
               {modeActive.upload && <span className="wb-mode-pip-dot" />}
-              upload
+              Upload
             </span>
             <span className={`wb-mode-pip ${modeActive.analyze ? 'is-active' : ''}`}>
               {modeActive.analyze && <span className="wb-mode-pip-dot" />}
-              analýza
+              Analýza
             </span>
             <span className={`wb-mode-pip ${modeActive.preview ? 'is-active' : ''}`}>
               {modeActive.preview && <span className="wb-mode-pip-dot" />}
-              preview
+              Preview
             </span>
             <span className={`wb-mode-pip ${modeActive.export ? 'is-active' : ''}`}>
               {modeActive.export && <span className="wb-mode-pip-dot" />}
-              export
+              Export
             </span>
           </nav>
           <div className="wb-topbar-right">

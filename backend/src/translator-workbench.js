@@ -16,6 +16,21 @@ const xmlBuilder = new XMLBuilder({
   attributeNamePrefix: '',
   format: true,
 })
+/** Retry an async fn with exponential backoff.  Does NOT retry on 4xx client errors. */
+async function withRetry(fn, { retries = 3, initialDelayMs = 800, label = 'operation' } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      const isClientError = error?.status >= 400 && error?.status < 500
+      if (attempt === retries || isClientError) throw error
+      const delay = initialDelayMs * Math.pow(2, attempt)
+      console.warn(`[withRetry] ${label} attempt ${attempt + 1} failed (${error?.message}), retrying in ${delay}ms`)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+}
+
 const CACHE_DIR = process.env.VERCEL
   ? join('/tmp', 'ebook-translator-data')
   : join(process.cwd(), 'backend', 'data')
@@ -713,10 +728,6 @@ function settingsFingerprint(settings = {}, provider = '') {
       baseUrl: settings.glm?.baseUrl || '',
       model: settings.glm?.model || '',
     }
-  } else if (provider === 'libre') {
-    normalized.libre = {
-      baseUrl: settings.libre?.baseUrl || '',
-    }
   }
 
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex')
@@ -941,35 +952,6 @@ async function translateTexts(provider, texts, options) {
     }
   }
 
-  if (provider === 'libre') {
-    try {
-      const missingTranslations = await translateManyWithLibre({
-        texts: misses.map((item) => item.source),
-        sourceLanguage: options.sourceLanguage,
-        targetLanguage: options.targetLanguage,
-        format: misses.every((item) => item.format === 'html') ? 'html' : 'text',
-        settings: options.settings,
-      })
-      misses.forEach((item, missIndex) => {
-        const translation = missingTranslations[missIndex] || ''
-        translations[item.index] = translation
-        cache[item.key] = {
-          provider,
-          sourceLanguage: options.sourceLanguage || '',
-          targetLanguage: options.targetLanguage || '',
-          translation,
-          updatedAt: new Date().toISOString(),
-        }
-      })
-      if (misses.length) {
-        saveCache(cache)
-      }
-      return { translations, cacheHits, cacheMisses: misses.length }
-    } catch (error) {
-      throw normalizeProviderError(error, provider)
-    }
-  }
-
   for (const item of misses) {
     let output = ''
     try {
@@ -1059,11 +1041,9 @@ function updatePackageForCleanSpine(pkg, includedSectionIds) {
     if (!/html|xhtml/i.test(mediaType)) {
       return true
     }
-
     if (mediaType.includes('nav')) {
       return true
     }
-
     return included.has(item.id)
   })
 
@@ -1218,7 +1198,8 @@ export function buildProviderMatrix() {
       setup: 'DEEPL_API_KEY',
       strengths: ['context', 'glossary', 'style rules', 'custom instructions'],
       caution: 'Méně flexibilní při velmi nejednoznačných pasážích.',
-      ratePerMillionCharsEur: 20,
+      // DeepL API Pro: €25/1M znaků (character-based, přímé API, duben 2026)
+      ratePerMillionCharsEur: 25,
     },
     {
       id: 'openai',
@@ -1228,7 +1209,9 @@ export function buildProviderMatrix() {
       setup: 'OPENAI_API_KEY',
       strengths: ['long context', 'reasoning', 'repair pass', 'style alignment'],
       caution: 'Dražší a pomalejší než DeepL.',
-      ratePerMillionCharsEur: 8,
+      // GPT-5.4 via OpenRouter: $2.50/1M input + $15/1M output tokenů
+      // ~2500 tokenů/10k znaků (input+output) → ~$4.40/1M znaků → €4.05
+      ratePerMillionCharsEur: 4.1,
     },
     {
       id: 'google',
@@ -1238,17 +1221,20 @@ export function buildProviderMatrix() {
       setup: 'GOOGLE_CLOUD_ACCESS_TOKEN + GOOGLE_CLOUD_PROJECT',
       strengths: ['adaptive translation', 'glossary', 'document workflows'],
       caution: 'Složitější autentizace a provoz.',
-      ratePerMillionCharsEur: 20,
+      // Google Cloud Translation Advanced: $20/1M znaků → €18.40
+      ratePerMillionCharsEur: 18.4,
     },
     {
       id: 'claude',
-      label: 'Claude Sonnet 4.5',
+      label: 'Claude Sonnet 4.6',
       tier: 'Optional fallback',
       bestFor: 'Druhá kontrola formulace a stylu u komplikovaných pasáží.',
       setup: 'ANTHROPIC_API_KEY',
       strengths: ['clean prose', 'large context'],
       caution: 'V první verzi spíš doplněk než hlavní engine.',
-      ratePerMillionCharsEur: 9,
+      // Claude Sonnet 4.6 via OpenRouter: $3/1M input + $15/1M output tokenů
+      // ~2500 tokenů/10k znaků → ~$4.50/1M znaků → €4.14
+      ratePerMillionCharsEur: 4.1,
     },
     {
       id: 'glm',
@@ -1258,17 +1244,8 @@ export function buildProviderMatrix() {
       setup: 'GLM_API_BASE_URL + volitelně GLM_API_KEY',
       strengths: ['silný multilingual model', 'coding-grade reasoning', 'hostovaný endpoint'],
       caution: 'Přímý GLM 5.1 obvykle vyžaduje Z.ai endpoint nebo vlastní provider nastavení.',
-      ratePerMillionCharsEur: 0.8,
-    },
-    {
-      id: 'libre',
-      label: 'LibreTranslate',
-      tier: 'Open source budget',
-      bestFor: 'Levný self-hosted nebo komunitní překlad s rozumnou kvalitou pro první průchod.',
-      setup: 'LIBRETRANSLATE_URL a volitelně LIBRETRANSLATE_API_KEY',
-      strengths: ['open source', 'low cost', 'self-hostable'],
-      caution: 'Slabší stylistika než DeepL, ale vhodné na levný preview nebo hrubý první překlad.',
-      ratePerMillionCharsEur: 1.2,
+      // GLM 5.1 via OpenRouter/Z.ai: ~$0.30/1M znaků → €0.28
+      ratePerMillionCharsEur: 0.28,
     },
   ]
 }
@@ -1687,45 +1664,6 @@ async function translateWithGlm({ text, sourceLanguage, targetLanguage, format =
   return payload?.choices?.[0]?.message?.content || ''
 }
 
-async function translateManyWithLibre({
-  texts,
-  sourceLanguage,
-  targetLanguage,
-  format = 'text',
-  settings,
-}) {
-  const baseUrl =
-    settings?.libre?.baseUrl || process.env.LIBRETRANSLATE_URL || 'https://translate.argosopentech.com'
-  const apiKey = settings?.libre?.apiKey || process.env.LIBRETRANSLATE_API_KEY || ''
-  const translations = []
-
-  for (const text of texts) {
-    const response = await fetch(`${String(baseUrl).replace(/\/$/, '')}/translate`, {
-      method: 'POST',
-      signal: providerTimeoutSignal(),
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        q: text,
-        source: sourceLanguage || 'auto',
-        target: targetLanguage || 'cs',
-        format,
-        api_key: apiKey || undefined,
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`LibreTranslate request failed: ${response.status}`)
-    }
-
-    const payload = await response.json()
-    translations.push(payload?.translatedText || '')
-  }
-
-  return translations
-}
-
 const translators = {
   deepl: translateWithDeepL,
   openai: async (payload) =>
@@ -1756,13 +1694,6 @@ const translators = {
         text: `Return valid HTML only. Keep the same tags and nesting as the source fragment.\n\n${payload.text}`,
       })
     ),
-  libre: async ({ text, sourceLanguage, targetLanguage, settings }) =>
-    (await translateManyWithLibre({
-      texts: [text],
-      sourceLanguage,
-      targetLanguage,
-      settings,
-    }))[0] || '',
   identity: async ({ text }) => text,
 }
 
@@ -2143,11 +2074,10 @@ export async function exportTranslatedEpub(payload) {
 
   for (const task of sectionTasks) {
     const { section, trimmedHtml, texts } = task
-    const translationBatch = await translateTexts(provider, texts, {
-      sourceLanguage,
-      targetLanguage,
-      settings,
-    })
+    const translationBatch = await withRetry(
+      () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
+      { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
+    )
     cacheHits += translationBatch.cacheHits
     cacheMisses += translationBatch.cacheMisses
     processedBlocks += texts.length
@@ -2172,6 +2102,19 @@ export async function exportTranslatedEpub(payload) {
     }
   }
 
+  // Update dc:language to target language so Kindle shows correct language metadata
+  if (pkg.metadata) {
+    const langVal = pkg.metadata.language
+    if (Array.isArray(langVal)) {
+      pkg.metadata.language = [targetLanguage, ...langVal.slice(1)]
+    } else if (langVal !== null && typeof langVal === 'object') {
+      pkg.metadata.language = { ...langVal, '#text': targetLanguage }
+    } else {
+      pkg.metadata.language = targetLanguage
+    }
+  }
+
+  // Prune NAV/NCX to only include selected sections; remove non-selected section files
   const manifestItems = toArray(pkg.manifest?.item)
   for (const item of manifestItems) {
     const resolvedHref = resolvePath(packagePath, item.href)
@@ -2202,11 +2145,20 @@ export async function exportTranslatedEpub(payload) {
   updatePackageForCleanSpine(pkg, includedIds)
   zip.file(packagePath, xmlBuilder.build({ package: pkg }))
 
-  const rebuilt = await zip.generateAsync({
+  // Rebuild ZIP with mimetype as the first, uncompressed entry (EPUB 3 spec requirement)
+  const orderedZip = new JSZip()
+  orderedZip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
+  for (const [name, zipEntry] of Object.entries(zip.files)) {
+    if (name === 'mimetype' || zipEntry.dir) continue
+    const content = await zipEntry.async('nodebuffer')
+    orderedZip.file(name, content)
+  }
+
+  const rebuilt = await orderedZip.generateAsync({
     type: 'nodebuffer',
     mimeType: 'application/epub+zip',
     compression: 'DEFLATE',
-    compressionOptions: { level: 9 },
+    compressionOptions: { level: 6 },
   })
 
   return {

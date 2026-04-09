@@ -114,7 +114,6 @@ function splitJobSettings(settings = {}) {
     google: { accessToken: settings?.google?.accessToken || '' },
     claude: { apiKey: settings?.claude?.apiKey || '' },
     glm: { apiKey: settings?.glm?.apiKey || '' },
-    libre: { apiKey: settings?.libre?.apiKey || '' },
   }
 
   if (publicSettings.openrouter) {
@@ -131,9 +130,6 @@ function splitJobSettings(settings = {}) {
   }
   if (publicSettings.claude) {
     delete publicSettings.claude.apiKey
-  }
-  if (publicSettings.libre) {
-    delete publicSettings.libre.apiKey
   }
   if (publicSettings.glm) {
     delete publicSettings.glm.apiKey
@@ -152,7 +148,6 @@ function mergeRuntimeSettings(job) {
     google: { ...(job.settings?.google || {}), ...(runtimeSecrets.google || {}) },
     claude: { ...(job.settings?.claude || {}), ...(runtimeSecrets.claude || {}) },
     glm: { ...(job.settings?.glm || {}), ...(runtimeSecrets.glm || {}) },
-    libre: { ...(job.settings?.libre || {}), ...(runtimeSecrets.libre || {}) },
   }
 }
 
@@ -324,21 +319,6 @@ async function diagnoseProviders(settings = {}) {
       diagnostics.glm = { status: 'unavailable', label: 'Endpoint nedostupný', detail: error.message }
     }
   }
-  }
-
-  const libreBaseUrl = settings?.libre?.baseUrl || process.env.LIBRETRANSLATE_URL || ''
-  if (!libreBaseUrl) {
-    diagnostics.libre = { status: 'missing_key', label: 'Chybí URL', detail: 'Zadej LibreTranslate URL.' }
-  } else {
-    try {
-      const response = await pingJson(`${String(libreBaseUrl).replace(/\/$/, '')}/languages`)
-      diagnostics.libre =
-        response.ok
-          ? { status: 'ready', label: 'Ready', detail: 'LibreTranslate endpoint odpovídá.' }
-          : { status: 'unavailable', label: 'Endpoint nedostupný', detail: `HTTP ${response.status}` }
-    } catch (error) {
-      diagnostics.libre = { status: 'unavailable', label: 'Endpoint nedostupný', detail: error.message }
-    }
   }
 
   return diagnostics
