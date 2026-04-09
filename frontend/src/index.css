@@ -1,24 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;500&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
-  --bg:          #ECECEC;
-  --surface:     #FCFCFC;
+  --bg:          #F3F1EE;
+  --surface:     #FBFAF8;
   --surface-2:   #FFFFFF;
-  --border:      #E2E2E2;
-  --border-2:    #BDBDBD;
-  --text:        #0F0F0F;
-  --text-2:      #3F3F3F;
-  --text-3:      #787878;
+  --surface-3:   #F5F2EF;
+  --border:      #E7E1DA;
+  --border-2:    #CFC5BC;
+  --border-soft: rgba(0, 0, 0, 0.05);
+  --text:        #111111;
+  --text-2:      #4E4E4E;
+  --text-3:      #777169;
   --accent:      #1F6B53;
-  --accent-dim:  rgba(31,107,83,0.08);
-  --red:         #A63A3A;
+  --accent-dim:  rgba(31,107,83,0.09);
+  --red:         #9B4A42;
   --amber:       #8E6A1F;
-  --topbar-h:    44px;
+  --topbar-h:    52px;
   --sidebar-l:   280px;
   --sidebar-r:   316px;
   --font:        'Inter', -apple-system, 'SF Pro Text', system-ui, sans-serif;
+  --display:     'Cormorant Garamond', 'Times New Roman', serif;
   --mono:        'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  --shadow-line: rgba(0,0,0,0.06) 0px 0px 0px 1px;
+  --shadow-soft: rgba(0,0,0,0.04) 0px 4px 10px;
+  --shadow-warm: rgba(78,50,23,0.05) 0px 10px 24px;
 
   font-family: var(--font);
   font-size: 13px;
@@ -36,8 +43,6 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  /* Enforce zero rounding globally */
-  border-radius: 0 !important;
 }
 
 html, body, #root {
@@ -53,7 +58,8 @@ html, body, #root {
 body {
   min-height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at top left, rgba(255,255,255,0.95), rgba(243,241,238,0.92) 36%, rgba(241,238,234,0.94) 100%);
 }
 
 button, input, select, textarea {
@@ -65,14 +71,15 @@ button { cursor: pointer; background: none; border: none; }
 img { max-width: 100%; display: block; }
 
 h1, h2, h3, h4, h5, h6 {
-  font-weight: 500;
-  line-height: 1.2;
+  font-family: var(--display);
+  font-weight: 300;
+  line-height: 1.14;
   color: var(--text);
-  letter-spacing: -0.015em;
+  letter-spacing: -0.04em;
   margin: 0;
 }
 
-p { margin: 0; color: var(--text-2); }
+p { margin: 0; color: var(--text-2); letter-spacing: 0.15px; }
 
 ::-webkit-scrollbar { width: 3px; height: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
