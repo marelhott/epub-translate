@@ -188,40 +188,49 @@ function sanitizePreviewHtml(html) {
     return html || ''
   }
 
-  const template = window.document.createElement('template')
-  template.innerHTML = html
-  const blockedTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'])
+  try {
+    const template = window.document.createElement('template')
+    template.innerHTML = html
+    const blockedTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'])
 
-  const walker = window.document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT)
-  const nodes = []
-  let current = walker.currentNode
+    const walker = window.document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT)
+    const nodes = []
+    // Start from nextNode() — walker.currentNode starts at DocumentFragment root
+    // which has no tagName or attributes and would crash on [...node.attributes]
+    let current = walker.nextNode()
 
-  while (current) {
-    nodes.push(current)
-    current = walker.nextNode()
-  }
-
-  for (const node of nodes) {
-    const tagName = node.tagName?.toLowerCase?.() || ''
-    if (blockedTags.has(tagName)) {
-      node.remove()
-      continue
+    while (current) {
+      nodes.push(current)
+      current = walker.nextNode()
     }
 
-    for (const attr of [...node.attributes]) {
-      const name = attr.name.toLowerCase()
-      const value = attr.value || ''
-      if (name.startsWith('on')) {
-        node.removeAttribute(attr.name)
+    for (const node of nodes) {
+      const tagName = node.tagName?.toLowerCase?.() || ''
+      if (blockedTags.has(tagName)) {
+        node.remove()
         continue
       }
-      if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(value)) {
-        node.removeAttribute(attr.name)
+
+      if (!node.attributes) continue
+
+      for (const attr of [...node.attributes]) {
+        const name = attr.name.toLowerCase()
+        const value = attr.value || ''
+        if (name.startsWith('on')) {
+          node.removeAttribute(attr.name)
+          continue
+        }
+        if ((name === 'href' || name === 'src') && /^\s*javascript:/i.test(value)) {
+          node.removeAttribute(attr.name)
+        }
       }
     }
-  }
 
-  return template.innerHTML
+    return template.innerHTML
+  } catch (error) {
+    console.error('[sanitizePreviewHtml] failed, returning raw html', error)
+    return html
+  }
 }
 
 function summarizeSections(sections = []) {
@@ -1076,17 +1085,18 @@ export default function App() {
       setStatusText('Preview je hotové. Porovnej si ukázku a potom případně spusť celý překlad.')
     } catch (previewError) {
       if (previewError.name === 'AbortError') {
+        // This request was cancelled — the newer request manages its own loading state
         console.log('[Preview] aborted (replaced by newer request)')
-        return
+        // Do NOT return here — let finally run to clean up loading state for this controller
+      } else {
+        console.error('[Preview] failed', previewError)
+        setError(previewError.message)
+        setStatusText('Preview překladu selhalo. Zkontroluj provider a API klíče v nastavení.')
       }
-      console.error('[Preview] failed', previewError)
-      setError(previewError.message)
-      setStatusText('Preview překladu selhalo. Zkontroluj provider a API klíče v nastavení.')
     } finally {
-      if (!controller.signal.aborted) {
-        setIsPreviewLoading(false)
-        setPreviewStartedAt(0)
-      }
+      // Always clear loading state — even on abort, so the UI never gets stuck
+      setIsPreviewLoading(false)
+      setPreviewStartedAt(0)
     }
   }
 
@@ -1499,28 +1509,30 @@ export default function App() {
             ) : null}
 
             {preview ? (
-              <section className="sidebar-card">
-                <div className="sidebar-label">Ukázka překladu</div>
-                <div className="preview-copy preview-copy--compact">
-                  <strong>
-                    {preview.provider} · {formatNumber(preview.wordCount)} slov · {formatPages(preview.pageCount)} strany
-                  </strong>
-                  <span className="preview-meta-note">
-                    Vzorek dvou náhodně vybraných stran z rozsahu označeného k překladu. Celou knihu listuješ ve středním panelu.
-                  </span>
-                  {preview.sections?.length ? (
-                    <div className="preview-sampled-sections">
-                      {preview.sections.map((section) => (
-                        <span key={section.id}>{section.title}</span>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div
-                    className="preview-html preview-html--compact"
-                    dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(preview.translatedHtml || '') }}
-                  />
-                </div>
-              </section>
+              <UiErrorBoundary>
+                <section className="sidebar-card">
+                  <div className="sidebar-label">Ukázka překladu</div>
+                  <div className="preview-copy preview-copy--compact">
+                    <strong>
+                      {preview.provider || selectedProvider} · {formatNumber(preview.wordCount)} slov · {formatPages(preview.pageCount)} strany
+                    </strong>
+                    <span className="preview-meta-note">
+                      Vzorek dvou náhodně vybraných stran z rozsahu označeného k překladu. Celou knihu listuješ ve středním panelu.
+                    </span>
+                    {preview.sections?.length ? (
+                      <div className="preview-sampled-sections">
+                        {preview.sections.map((section, idx) => (
+                          <span key={section.id || idx}>{section.title}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div
+                      className="preview-html preview-html--compact"
+                      dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(preview.translatedHtml || '') }}
+                    />
+                  </div>
+                </section>
+              </UiErrorBoundary>
             ) : null}
 
             {isPreviewLoading && !preview ? (
