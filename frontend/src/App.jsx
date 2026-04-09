@@ -1160,7 +1160,9 @@ export default function App() {
         ? 'progress'
         : translatedBookData
           ? 'translated'
-          : 'original'
+          : preview
+            ? 'preview-result'
+            : 'original'
   const previewElapsedSeconds =
     isPreviewLoading && previewStartedAt ? Math.max(1, Math.round((previewTick - previewStartedAt) / 1000)) : 0
 
@@ -1376,6 +1378,43 @@ export default function App() {
                   <div className="progress-box">
                     <strong>{includedSections.length}</strong>
                     <span>sekcí v aktivním rozsahu</span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {rightMode === 'preview-result' ? (
+              <div className="viewer-card viewer-card--preview-result">
+                <div className="reader-shell">
+                  <div className="reader-toolbar">
+                    <strong>
+                      {providers.find((item) => item.id === selectedProvider)?.label || selectedProvider} · ukázka překladu
+                    </strong>
+                    <div className="reader-toolbar-right">
+                      <span>{formatNumber(preview?.wordCount)} slov · {formatPages(preview?.pageCount)} str.</span>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        onClick={() => setPreview(null)}
+                      >
+                        Zpět na originál
+                      </button>
+                    </div>
+                  </div>
+                  {preview?.sections?.length ? (
+                    <div className="reader-jumps">
+                      {preview.sections.map((section, idx) => (
+                        <span key={section.id || idx} className="preview-section-chip">
+                          {section.title}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="reader-stage preview-result-stage">
+                    <div
+                      className="preview-result-body"
+                      dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(preview?.translatedHtml || '') }}
+                    />
                   </div>
                 </div>
               </div>
