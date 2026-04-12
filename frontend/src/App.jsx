@@ -88,6 +88,13 @@ function formatPages(value) {
 function formatCurrency(value) {
   return new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(Number(value || 0))
 }
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(Number(totalSeconds || 0)))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const rest = seconds % 60
+  return [hours, minutes, rest].map((part) => String(part).padStart(2, '0')).join(':')
+}
 function formatDateTime(value) {
   if (!value) return '—'
   try {
@@ -601,6 +608,11 @@ export default function App() {
     return Math.max(0.02, (Date.now() - new Date(job.startedAt).getTime()) / 60000)
   }, [job])
 
+  const progressElapsedSeconds = useMemo(() => {
+    if (!job?.startedAt) return 0
+    return Math.max(0, (Date.now() - new Date(job.startedAt).getTime()) / 1000)
+  }, [job])
+
   const progressWordsPerMinute = useMemo(() => {
     if (!job?.progress?.processedWords || !progressRuntimeMinutes) return 0
     return Math.round(job.progress.processedWords / progressRuntimeMinutes)
@@ -1049,7 +1061,10 @@ export default function App() {
                       <div className="wb-progress-label">Probíhá překlad</div>
                       <div className="wb-progress-title">{analysis?.metadata?.title || 'Kniha'}</div>
                     </div>
-                    <div className="wb-progress-pct">{Number(job?.progress?.percent || 0).toFixed(1)}%</div>
+                    <div className="wb-progress-clock">
+                      <span className="wb-progress-pct">{Number(job?.progress?.percent || 0).toFixed(1)}%</span>
+                      <span className="wb-progress-time">{formatDuration(progressElapsedSeconds)}</span>
+                    </div>
                   </div>
                   <div className="wb-progress-track">
                     <div
@@ -1115,21 +1130,21 @@ export default function App() {
 
             <div className="wb-actions">
               <button
-                className="wb-btn"
+                className="wb-btn wb-btn--preview"
                 disabled={!includedSections.length || isPreviewLoading}
                 onClick={runPreviewTranslation}
               >
                 {isPreviewLoading ? 'Překládám ukázku…' : 'Preview 2 strany'}
               </button>
               <button
-                className="wb-btn wb-btn--accent"
+                className="wb-btn wb-btn--translate"
                 disabled={!includedSections.length}
                 onClick={startTranslation}
               >
                 Spustit překlad
               </button>
               <button
-                className="wb-btn"
+                className="wb-btn wb-btn--download"
                 disabled={!translatedBlob}
                 onClick={downloadTranslatedBook}
               >

@@ -2,7 +2,7 @@ import dotenv from 'dotenv'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
-import { del as blobDel, list as blobList, put as blobPut } from '@vercel/blob'
+import { del as blobDel, get as blobGet, list as blobList, put as blobPut } from '@vercel/blob'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -75,14 +75,20 @@ async function findBlob(pathname) {
 }
 
 async function readBlobBuffer(pathname) {
-  const blob = await findBlob(pathname)
-  if (!blob?.url) {
+  if (!USE_DURABLE_BLOB) {
     return null
   }
-  const response = await fetch(blob.url)
-  if (!response.ok) {
+
+  const result = await blobGet(pathname, {
+    access: 'public',
+    useCache: false,
+    token: BLOB_TOKEN,
+  })
+  if (!result?.stream || result.statusCode !== 200) {
     return null
   }
+
+  const response = new Response(result.stream)
   return Buffer.from(await response.arrayBuffer())
 }
 
@@ -94,6 +100,7 @@ async function writeBlob(pathname, body, contentType) {
     access: 'public',
     addRandomSuffix: false,
     allowOverwrite: true,
+    cacheControlMaxAge: 60,
     contentType,
     token: BLOB_TOKEN,
   })

@@ -299,9 +299,13 @@
 }
 
 .wb-upload-label {
-  font-size: 12px;
+  font-size: 8.4px;
   font-weight: 500;
   color: var(--text);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .wb-upload-hint {
@@ -760,6 +764,22 @@
   white-space: nowrap;
 }
 
+.wb-progress-clock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.wb-progress-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
 .wb-progress-track {
   width: 100%;
   height: 8px;
@@ -1122,6 +1142,55 @@
   background: rgba(245, 242, 239, 0.96);
   color: var(--text);
   border-color: rgba(0,0,0,0.06);
+}
+
+.wb-btn--preview {
+  background: #c56d1f;
+  border-color: #b96218;
+  color: #fff;
+  font-weight: 650;
+  box-shadow: rgba(197,109,31,0.14) 0px 6px 16px;
+}
+
+.wb-btn--preview:hover:not(:disabled) {
+  background: #b96218;
+  border-color: #a75412;
+  color: #fff;
+}
+
+.wb-btn--translate {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #fff;
+  font-weight: 650;
+  box-shadow: rgba(37,99,235,0.14) 0px 6px 16px;
+}
+
+.wb-btn--translate:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1e40af;
+  color: #fff;
+}
+
+.wb-btn--download {
+  background: #236f55;
+  border-color: #1f604b;
+  color: #fff;
+  font-weight: 650;
+  box-shadow: rgba(35,111,85,0.14) 0px 6px 16px;
+}
+
+.wb-btn--download:hover:not(:disabled) {
+  background: #1f604b;
+  border-color: #1a5140;
+  color: #fff;
+}
+
+.wb-btn--preview:disabled,
+.wb-btn--translate:disabled,
+.wb-btn--download:disabled {
+  color: rgba(255,255,255,0.82);
+  filter: grayscale(0.2);
 }
 
 .wb-job-history {
