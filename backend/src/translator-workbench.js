@@ -2043,6 +2043,7 @@ export async function exportTranslatedEpub(payload) {
   const includedSections = sections.filter((section) => section.includeInTranslation)
   const includedIds = includedSections.map((section) => section.id)
   const includedHrefs = new Set(includedSections.map((section) => section.href))
+  const preparationWeight = 8
   let cacheHits = 0
   let cacheMisses = 0
   let processedBlocks = 0
@@ -2054,7 +2055,8 @@ export async function exportTranslatedEpub(payload) {
     0
   )
 
-  for (const section of includedSections) {
+  for (let index = 0; index < includedSections.length; index += 1) {
+    const section = includedSections[index]
     const file = zip.file(section.href)
     if (!file) {
       continue
@@ -2070,6 +2072,26 @@ export async function exportTranslatedEpub(payload) {
       texts,
     })
     totalBlocks += texts.length
+
+    if (onProgress) {
+      await onProgress({
+        stage: 'preparing-export',
+        processedBlocks: 0,
+        totalBlocks,
+        processedWords: 0,
+        totalWords,
+        processedPages: 0,
+        totalPages: Math.max(1, Math.ceil(totalWords / 300)),
+        cacheHits,
+        cacheMisses,
+        currentSectionId: section.id,
+        currentSectionTitle: section.title,
+        percent:
+          includedSections.length > 0
+            ? Number((((index + 1) / includedSections.length) * preparationWeight).toFixed(2))
+            : 0,
+      })
+    }
   }
 
   for (const task of sectionTasks) {
@@ -2098,6 +2120,10 @@ export async function exportTranslatedEpub(payload) {
         cacheMisses,
         currentSectionId: section.id,
         currentSectionTitle: section.title,
+        percent:
+          totalBlocks > 0
+            ? Number((preparationWeight + (processedBlocks / totalBlocks) * (100 - preparationWeight)).toFixed(2))
+            : 100,
       })
     }
   }

@@ -427,7 +427,9 @@ async function processJob(jobId) {
               currentSectionId: progress.currentSectionId || '',
               currentSectionTitle: progress.currentSectionTitle || '',
               percent:
-                progress.totalBlocks > 0
+                typeof progress.percent === 'number'
+                  ? progress.percent
+                  : progress.totalBlocks > 0
                   ? Number(((progress.processedBlocks / progress.totalBlocks) * 100).toFixed(2))
                   : 100,
             },
