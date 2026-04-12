@@ -640,6 +640,7 @@ async function processJob(jobId, options = {}) {
 
           const next = {
             ...current,
+            status: 'processing',
             updatedAt: nowIso(),
             progress: {
               ...current.progress,
