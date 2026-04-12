@@ -55,6 +55,41 @@ function looksLikeEpubUpload(file) {
   return fileName.endsWith('.epub') && hasZipSignature(file?.buffer) && allowedMimeTypes.has(mimeType || 'application/octet-stream')
 }
 
+function parseBodyPayload(req) {
+  const payload = req.body?.payload
+  if (typeof payload !== 'string') {
+    return req.body || {}
+  }
+
+  try {
+    return JSON.parse(payload)
+  } catch {
+    return {}
+  }
+}
+
+function resolveSourceBuffer(payload, file) {
+  if (file?.buffer?.length) {
+    if (!looksLikeEpubUpload(file)) {
+      const error = new Error('Neplatný EPUB soubor.')
+      error.statusCode = 400
+      error.detail = 'Nahraj soubor .epub se ZIP strukturou.'
+      throw error
+    }
+    return file.buffer
+  }
+
+  const sessionId = payload?.sessionId
+  const sourcePath = sessionId ? sessionFilePath(sessionId) : ''
+  if (sessionId && existsSync(sourcePath)) {
+    return readFileSync(sourcePath)
+  }
+
+  const error = new Error('Upload session nebyla nalezena nebo už expirovala.')
+  error.statusCode = 404
+  throw error
+}
+
 function readJob(jobId) {
   const path = jobFilePath(jobId)
   if (!existsSync(path)) {
@@ -536,22 +571,21 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
   }
 })
 
-app.post('/api/translate-preview', async (req, res) => {
+app.post('/api/translate-preview', upload.single('file'), async (req, res) => {
   try {
-    const sessionId = req.body?.sessionId
-    const sourcePath = sessionId ? sessionFilePath(sessionId) : ''
+    const payload = parseBodyPayload(req)
     const result =
-      sessionId && existsSync(sourcePath)
+      req.file || payload?.sessionId
         ? await translatePreviewFromEpub({
-            buffer: readFileSync(sourcePath),
-            ...req.body,
+            buffer: resolveSourceBuffer(payload, req.file),
+            ...payload,
           })
-        : await translateSelectedSections(req.body)
+        : await translateSelectedSections(payload)
     return res.json(result)
   } catch (error) {
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: 'Nepodařilo se připravit překladový preview výstup.',
-      detail: error instanceof Error ? error.message : 'Unknown error',
+      detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
     })
   }
 })
@@ -580,39 +614,35 @@ app.get('/api/jobs/:id/download', (req, res) => {
   return res.send(readFileSync(job.outputPath))
 })
 
-app.post('/api/jobs', async (req, res) => {
+app.post('/api/jobs', upload.single('file'), async (req, res) => {
   try {
-    const sessionId = req.body?.sessionId
-    const sourcePath = sessionFilePath(sessionId)
-    if (!sessionId || !existsSync(sourcePath)) {
-      return res.status(404).json({ error: 'Upload session nebyla nalezena nebo už expirovala.' })
-    }
-
-    const analysisSummary = req.body?.analysisSummary || {}
-    const { publicSettings, secretSettings } = splitJobSettings(req.body?.settings || {})
-    const sourceBuffer = readFileSync(sourcePath)
+    const payload = parseBodyPayload(req)
+    const sessionId = payload?.sessionId || randomUUID()
+    const sourceBuffer = resolveSourceBuffer(payload, req.file)
+    const analysisSummary = payload?.analysisSummary || {}
+    const { publicSettings, secretSettings } = splitJobSettings(payload?.settings || {})
     const plan = await buildExportPlan({
       buffer: sourceBuffer,
-      fileName: req.body?.fileName || 'book.epub',
-      provider: req.body?.provider || 'deepl',
-      sourceLanguage: req.body?.sourceLanguage || '',
-      targetLanguage: req.body?.targetLanguage || 'cs',
-      sections: req.body?.sections || [],
+      fileName: payload?.fileName || req.file?.originalname || 'book.epub',
+      provider: payload?.provider || 'deepl',
+      sourceLanguage: payload?.sourceLanguage || '',
+      targetLanguage: payload?.targetLanguage || 'cs',
+      sections: payload?.sections || [],
       settings: { ...publicSettings, ...secretSettings },
     })
 
     const job = {
       id: randomUUID(),
       sessionId,
-      fileName: req.body?.fileName || 'book.epub',
-      provider: req.body?.provider || 'deepl',
-      sourceLanguage: req.body?.sourceLanguage || '',
-      targetLanguage: req.body?.targetLanguage || 'cs',
+      fileName: payload?.fileName || req.file?.originalname || 'book.epub',
+      provider: payload?.provider || 'deepl',
+      sourceLanguage: payload?.sourceLanguage || '',
+      targetLanguage: payload?.targetLanguage || 'cs',
       settings: publicSettings,
       status: 'queued',
       createdAt: nowIso(),
       updatedAt: nowIso(),
-      sections: req.body?.sections || [],
+      sections: payload?.sections || [],
       summary: {
         totalSections: analysisSummary.totalSections || 0,
         translatedSections: plan.translatedSections,
@@ -647,9 +677,9 @@ app.post('/api/jobs', async (req, res) => {
 
     return res.status(202).json(publicJob(job))
   } catch (error) {
-    return res.status(500).json({
-      error: 'Nepodařilo se založit export job.',
-      detail: error instanceof Error ? error.message : 'Unknown error',
+    return res.status(error.statusCode || 500).json({
+      error: error?.statusCode ? (error.message || 'Nepodařilo se založit export job.') : 'Nepodařilo se založit export job.',
+      detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
     })
   }
 })

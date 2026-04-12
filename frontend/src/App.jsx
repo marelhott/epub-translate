@@ -152,6 +152,19 @@ function sanitizePreviewHtml(html) {
   } catch (error) { console.error('[sanitizePreviewHtml] failed', error); return html }
 }
 
+function buildEpubRequestPayload(payload, originalBookData, fallbackFileName = 'book.epub') {
+  const formData = new FormData()
+  formData.append('payload', JSON.stringify(payload))
+  if (originalBookData) {
+    formData.append(
+      'file',
+      new Blob([originalBookData], { type: 'application/epub+zip' }),
+      fallbackFileName
+    )
+  }
+  return formData
+}
+
 function summarizeSections(sections = []) {
   const translated = sections.filter((s) => s.includeInTranslation)
   const skipped = sections.filter((s) => !s.includeInTranslation)
@@ -638,7 +651,7 @@ export default function App() {
   }
 
   async function runPreviewTranslation() {
-    if (!analysis?.sections?.length || !includedSections.length) return
+    if (!analysis?.sections?.length || !includedSections.length || !originalBookData) return
     previewAbortRef.current?.abort()
     const controller = new AbortController()
     previewAbortRef.current = controller
@@ -646,18 +659,18 @@ export default function App() {
     setPreviewStartedAt(Date.now()); setPreviewTick(Date.now())
     setStatusText('Překládám dvoustránkové preview…')
     try {
+      const requestPayload = {
+        sessionId: analysis.sessionId,
+        provider: selectedProvider,
+        sourceLanguage: analysis.metadata.language || 'en',
+        targetLanguage: 'cs',
+        sections: analysis.sections,
+        previewPageCount: 2,
+        settings: sanitizeSettings(settings),
+      }
       const response = await fetch(apiUrl('/api/translate-preview'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: analysis.sessionId,
-          provider: selectedProvider,
-          sourceLanguage: analysis.metadata.language || 'en',
-          targetLanguage: 'cs',
-          sections: analysis.sections,
-          previewPageCount: 2,
-          settings: sanitizeSettings(settings),
-        }),
+        body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
         signal: controller.signal,
       })
       const payload = await parseJsonSafely(response)
@@ -676,23 +689,23 @@ export default function App() {
   }
 
   async function startTranslation() {
-    if (!analysis?.sessionId || !includedSections.length) return
+    if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
     setError(''); setExportMeta(null)
     setStatusText('Překlad probíhá…')
     try {
+      const requestPayload = {
+        sessionId: analysis.sessionId,
+        fileName: analysis.fileName,
+        provider: selectedProvider,
+        sourceLanguage: analysis.metadata.language || 'en',
+        targetLanguage: 'cs',
+        sections: analysis.sections,
+        analysisSummary: analysis.summary,
+        settings: sanitizeSettings(settings),
+      }
       const response = await fetch(apiUrl('/api/jobs'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: analysis.sessionId,
-          fileName: analysis.fileName,
-          provider: selectedProvider,
-          sourceLanguage: analysis.metadata.language || 'en',
-          targetLanguage: 'cs',
-          sections: analysis.sections,
-          analysisSummary: analysis.summary,
-          settings: sanitizeSettings(settings),
-        }),
+        body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
       })
       const payload = await parseJsonSafely(response)
       if (!response.ok) throw new Error(payload?.detail || payload?.error || 'Export failed')
