@@ -88,6 +88,19 @@ function formatPages(value) {
 function formatCurrency(value) {
   return new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(Number(value || 0))
 }
+function formatDateTime(value) {
+  if (!value) return '—'
+  try {
+    return new Intl.DateTimeFormat('cs-CZ', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value))
+  } catch {
+    return '—'
+  }
+}
 function providerMoniker(providerId) {
   if (providerId === 'openai') return 'AI'
   if (providerId === 'deepl') return 'DL'
@@ -434,6 +447,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [statusText, setStatusText] = useState('Nahraj EPUB, ověř preview, spusť překlad.')
   const [job, setJob] = useState(null)
+  const [jobs, setJobs] = useState([])
+  const [backendHealth, setBackendHealth] = useState(null)
   const [exportMeta, setExportMeta] = useState(null)
   const [preview, setPreview] = useState(null)
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
@@ -462,10 +477,23 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    fetch(apiUrl('/api/health'))
+      .then((response) => parseJsonSafely(response))
+      .then((payload) => setBackendHealth(payload))
+      .catch(() => setBackendHealth(null))
+  }, [])
+
+  useEffect(() => {
     if (!providers.length) return
     const timeout = window.setTimeout(() => refreshDiagnostics().catch(() => {}), 250)
     return () => window.clearTimeout(timeout)
   }, [providers, settings])
+
+  useEffect(() => {
+    loadJobs().catch(() => {})
+    const interval = window.setInterval(() => loadJobs().catch(() => {}), 5000)
+    return () => window.clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     if (!analysis?.sections) return
@@ -497,11 +525,6 @@ export default function App() {
     if (pollingRef.current.jobId !== job.id) pollingRef.current = { jobId: job.id, startedAt: Date.now(), failures: 0 }
 
     const interval = window.setInterval(async () => {
-      if (Date.now() - pollingRef.current.startedAt > 1000 * 60 * 30) {
-        window.clearInterval(interval)
-        setError('Překlad překročil maximální dobu čekání.')
-        return
-      }
       try {
         const response = await fetch(apiUrl(`/api/jobs/${job.id}`))
         if (!response.ok) { pollingRef.current.failures += 1; return }
@@ -509,6 +532,7 @@ export default function App() {
         if (!payload) { pollingRef.current.failures += 1; return }
         pollingRef.current.failures = 0
         setJob(payload)
+        setJobs((current) => [payload, ...current.filter((item) => item.id !== payload.id)].slice(0, 12))
         if (payload.status === 'completed') {
           setStatusText('Překlad hotový.')
           setExportMeta({ fileName: payload.outputFileName, cacheHits: payload.progress?.cacheHits || 0, cacheMisses: payload.progress?.cacheMisses || 0 })
@@ -525,7 +549,9 @@ export default function App() {
         }
       } catch (pollError) {
         pollingRef.current.failures += 1
-        if (pollingRef.current.failures >= 5) { window.clearInterval(interval); setError(pollError.message || 'Spojení přerušeno.') }
+        if (pollingRef.current.failures >= 5) {
+          setStatusText('Spojení s jobem se obnovuje… překlad nepovažuju za ukončený.')
+        }
       }
     }, 1000)
     return () => window.clearInterval(interval)
@@ -614,6 +640,13 @@ export default function App() {
       if (response.ok) setDiagnostics(payload)
       else throw new Error(payload?.detail || payload?.error || 'Diagnostika selhala.')
     } finally { setDiagnosticsLoading(false) }
+  }
+
+  async function loadJobs() {
+    const response = await fetch(apiUrl('/api/jobs'))
+    const payload = await parseJsonSafely(response)
+    if (!response.ok || !Array.isArray(payload)) return
+    setJobs(payload.slice(0, 12))
   }
 
   async function handleFileUpload(event) {
@@ -710,9 +743,37 @@ export default function App() {
       const payload = await parseJsonSafely(response)
       if (!response.ok) throw new Error(payload?.detail || payload?.error || 'Export failed')
       setJob(payload)
+      setJobs((current) => [payload, ...current.filter((item) => item.id !== payload.id)].slice(0, 12))
     } catch (jobError) {
       setError(jobError.message)
       setStatusText('Nepodařilo se spustit překlad.')
+    }
+  }
+
+  async function resumeTranslation(targetJob) {
+    if (!targetJob?.id) return
+    setError('')
+    setStatusText('Obnovuji překlad z posledního checkpointu…')
+    try {
+      const requestPayload = {
+        settings: sanitizeSettings(settings),
+      }
+      const response = await fetch(apiUrl(`/api/jobs/${targetJob.id}/resume`), {
+        method: 'POST',
+        body: buildEpubRequestPayload(
+          requestPayload,
+          originalBookData,
+          analysis?.fileName || targetJob.fileName || 'book.epub'
+        ),
+      })
+      const payload = await parseJsonSafely(response)
+      if (!response.ok) throw new Error(payload?.detail || payload?.error || 'Resume failed')
+      setJob(payload)
+      setJobs((current) => [payload, ...current.filter((item) => item.id !== payload.id)].slice(0, 12))
+      setStatusText('Překlad navázal na poslední uloženou sekci.')
+    } catch (resumeError) {
+      setError(resumeError.message || 'Obnovení selhalo.')
+      setStatusText('Obnovení se nepodařilo.')
     }
   }
 
@@ -1075,6 +1136,53 @@ export default function App() {
                 Stáhnout EPUB
               </button>
             </div>
+
+            {backendHealth?.durableStorage && backendHealth.durableStorage !== 'vercel-blob' ? (
+              <div className="wb-storage-warning wb-storage-warning--standalone">
+                Durable storage není aktivní. Produkce potřebuje BLOB_READ_WRITE_TOKEN.
+              </div>
+            ) : null}
+
+            {jobs.length ? (
+              <div className="wb-job-history">
+                <div className="wb-job-history-head">
+                  <span>Obnovitelné překlady</span>
+                  <button type="button" onClick={() => loadJobs().catch(() => {})}>refresh</button>
+                </div>
+                <div className="wb-job-history-list">
+                  {jobs.slice(0, 5).map((item) => {
+                    const isCurrent = item.id === job?.id
+                    const canResume = item.status !== 'completed' && !(item.status === 'processing' && isCurrent)
+                    const checkpointCount = item.checkpoint?.completedSections || 0
+                    return (
+                      <div key={item.id} className={`wb-job-row ${isCurrent ? 'is-current' : ''}`}>
+                        <div className="wb-job-row-main">
+                          <span className="wb-job-file" title={item.fileName}>{item.fileName || 'EPUB'}</span>
+                          <span className="wb-job-meta">
+                            {providerVersion(item.provider)} · {formatDateTime(item.updatedAt || item.createdAt)} · {Math.round(item.progress?.percent || 0)}%
+                          </span>
+                          <span className="wb-job-meta">
+                            {item.status}
+                            {checkpointCount ? ` · checkpoint ${checkpointCount} sekcí` : ''}
+                          </span>
+                        </div>
+                        {canResume ? (
+                          <button
+                            type="button"
+                            className="wb-job-resume"
+                            onClick={() => resumeTranslation(item)}
+                          >
+                            Obnovit
+                          </button>
+                        ) : (
+                          <span className="wb-job-state">{item.status === 'completed' ? 'Hotovo' : 'Běží'}</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : null}
 
             {/* Filters */}
             <div className="wb-pane-head">

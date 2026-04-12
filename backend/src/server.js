@@ -1,7 +1,8 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
+import { del as blobDel, list as blobList, put as blobPut } from '@vercel/blob'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -17,11 +18,17 @@ import {
   UPLOADS_DIR,
 } from './translator-workbench.js'
 
+dotenv.config({ path: '.env.local' })
+dotenv.config()
+
 const app = express()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } })
 const activeJobs = new Map()
 const jobSecrets = new Map()
 const JOB_TTL_MS = 1000 * 60 * 60 * 24
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN || ''
+const USE_DURABLE_BLOB = Boolean(BLOB_TOKEN)
+const BLOB_PREFIX = 'ebook-translator'
 
 function nowIso() {
   return new Date().toISOString()
@@ -31,12 +38,84 @@ function sessionFilePath(sessionId) {
   return join(UPLOADS_DIR, `${sessionId}.epub`)
 }
 
+function sessionStorageKey(sessionId) {
+  return `${BLOB_PREFIX}/uploads/${sessionId}.epub`
+}
+
 function jobFilePath(jobId) {
   return join(JOBS_DIR, `${jobId}.json`)
 }
 
+function jobStorageKey(jobId) {
+  return `${BLOB_PREFIX}/jobs/${jobId}.json`
+}
+
+function checkpointFilePath(jobId) {
+  return join(JOBS_DIR, `${jobId}.checkpoint.json`)
+}
+
+function checkpointStorageKey(jobId) {
+  return `${BLOB_PREFIX}/jobs/${jobId}.checkpoint.json`
+}
+
 function outputFilePath(jobId, fileName) {
   return join(OUTPUTS_DIR, `${jobId}__${fileName}`)
+}
+
+function outputStorageKey(jobId, fileName) {
+  return `${BLOB_PREFIX}/outputs/${jobId}__${fileName}`
+}
+
+async function findBlob(pathname) {
+  if (!USE_DURABLE_BLOB) {
+    return null
+  }
+  const result = await blobList({ prefix: pathname, limit: 1, token: BLOB_TOKEN })
+  return result.blobs.find((item) => item.pathname === pathname) || null
+}
+
+async function readBlobBuffer(pathname) {
+  const blob = await findBlob(pathname)
+  if (!blob?.url) {
+    return null
+  }
+  const response = await fetch(blob.url)
+  if (!response.ok) {
+    return null
+  }
+  return Buffer.from(await response.arrayBuffer())
+}
+
+async function writeBlob(pathname, body, contentType) {
+  if (!USE_DURABLE_BLOB) {
+    return
+  }
+  await blobPut(pathname, body, {
+    access: 'public',
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType,
+    token: BLOB_TOKEN,
+  })
+}
+
+async function deleteBlob(pathname) {
+  const blob = await findBlob(pathname)
+  if (blob?.url) {
+    await blobDel(blob.url, { token: BLOB_TOKEN })
+  }
+}
+
+async function readJsonFromBlob(pathname) {
+  const buffer = await readBlobBuffer(pathname)
+  if (!buffer) {
+    return null
+  }
+  try {
+    return JSON.parse(buffer.toString('utf-8'))
+  } catch {
+    return null
+  }
 }
 
 function hasZipSignature(buffer) {
@@ -68,7 +147,7 @@ function parseBodyPayload(req) {
   }
 }
 
-function resolveSourceBuffer(payload, file) {
+async function resolveSourceBuffer(payload, file) {
   if (file?.buffer?.length) {
     if (!looksLikeEpubUpload(file)) {
       const error = new Error('Neplatný EPUB soubor.')
@@ -81,6 +160,10 @@ function resolveSourceBuffer(payload, file) {
 
   const sessionId = payload?.sessionId
   const sourcePath = sessionId ? sessionFilePath(sessionId) : ''
+  const durableBuffer = sessionId ? await readBlobBuffer(sessionStorageKey(sessionId)) : null
+  if (durableBuffer?.length) {
+    return durableBuffer
+  }
   if (sessionId && existsSync(sourcePath)) {
     return readFileSync(sourcePath)
   }
@@ -90,7 +173,12 @@ function resolveSourceBuffer(payload, file) {
   throw error
 }
 
-function readJob(jobId) {
+async function readJob(jobId) {
+  const durableJob = await readJsonFromBlob(jobStorageKey(jobId))
+  if (durableJob) {
+    return durableJob
+  }
+
   const path = jobFilePath(jobId)
   if (!existsSync(path)) {
     return null
@@ -103,22 +191,80 @@ function readJob(jobId) {
   }
 }
 
-function writeJob(job) {
+async function writeJob(job) {
   writeFileSync(jobFilePath(job.id), JSON.stringify(job, null, 2), 'utf-8')
+  await writeBlob(jobStorageKey(job.id), JSON.stringify(job, null, 2), 'application/json')
 }
 
-function listJobs() {
-  return readdirSync(JOBS_DIR)
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => readJob(name.replace(/\.json$/, '')))
-    .filter(Boolean)
+async function readCheckpoint(jobId) {
+  const durableCheckpoint = await readJsonFromBlob(checkpointStorageKey(jobId))
+  if (durableCheckpoint) {
+    return durableCheckpoint
+  }
+
+  const path = checkpointFilePath(jobId)
+  if (!existsSync(path)) {
+    return null
+  }
+
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
+async function writeCheckpoint(jobId, checkpoint) {
+  writeFileSync(checkpointFilePath(jobId), JSON.stringify(checkpoint, null, 2), 'utf-8')
+  await writeBlob(checkpointStorageKey(jobId), JSON.stringify(checkpoint, null, 2), 'application/json')
+}
+
+async function deleteCheckpoint(jobId) {
+  const path = checkpointFilePath(jobId)
+  if (existsSync(path)) {
+    unlinkSync(path)
+  }
+  await deleteBlob(checkpointStorageKey(jobId))
+}
+
+async function listJobs() {
+  const byId = new Map()
+
+  if (USE_DURABLE_BLOB) {
+    const result = await blobList({ prefix: `${BLOB_PREFIX}/jobs/`, limit: 1000, token: BLOB_TOKEN })
+    for (const item of result.blobs) {
+      const name = item.pathname.split('/').pop() || ''
+      if (!name.endsWith('.json') || name.endsWith('.checkpoint.json')) {
+        continue
+      }
+      const id = name.replace(/\.json$/, '')
+      const job = await readJob(id)
+      if (job?.id) {
+        byId.set(job.id, job)
+      }
+    }
+  }
+
+  for (const name of readdirSync(JOBS_DIR)) {
+    if (!name.endsWith('.json') || name.endsWith('.checkpoint.json')) {
+      continue
+    }
+    const job = await readJob(name.replace(/\.json$/, ''))
+    if (job?.id) {
+      byId.set(job.id, job)
+    }
+  }
+
+  return [...byId.values()]
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
 }
 
-function publicJob(job) {
+async function publicJob(job) {
   if (!job) {
     return null
   }
+
+  const checkpoint = await readCheckpoint(job.id)
 
   return {
     id: job.id,
@@ -137,7 +283,65 @@ function publicJob(job) {
     completedAt: job.completedAt,
     error: job.error || '',
     outputFileName: job.outputFileName || '',
+    checkpoint: checkpoint
+      ? {
+          completedSections: Object.keys(checkpoint.sections || {}).length,
+          updatedAt: checkpoint.updatedAt || '',
+        }
+      : null,
   }
+}
+
+async function writeSessionSource(sessionId, buffer) {
+  writeFileSync(sessionFilePath(sessionId), buffer)
+  await writeBlob(sessionStorageKey(sessionId), buffer, 'application/epub+zip')
+}
+
+async function sourceExists(sessionId) {
+  return Boolean(
+    (USE_DURABLE_BLOB && (await findBlob(sessionStorageKey(sessionId)))) ||
+      existsSync(sessionFilePath(sessionId))
+  )
+}
+
+async function readSessionSource(sessionId) {
+  const durableBuffer = await readBlobBuffer(sessionStorageKey(sessionId))
+  if (durableBuffer?.length) {
+    return durableBuffer
+  }
+  const sourcePath = sessionFilePath(sessionId)
+  return existsSync(sourcePath) ? readFileSync(sourcePath) : null
+}
+
+async function deleteSessionSource(sessionId) {
+  const sourcePath = sessionFilePath(sessionId)
+  if (existsSync(sourcePath)) {
+    unlinkSync(sourcePath)
+  }
+  await deleteBlob(sessionStorageKey(sessionId))
+}
+
+async function writeOutput(jobId, fileName, buffer) {
+  const localPath = outputFilePath(jobId, fileName)
+  writeFileSync(localPath, buffer)
+  await writeBlob(outputStorageKey(jobId, fileName), buffer, 'application/epub+zip')
+  return { localPath, storageKey: outputStorageKey(jobId, fileName) }
+}
+
+async function readOutput(job) {
+  if (job?.outputStorageKey) {
+    const durableBuffer = await readBlobBuffer(job.outputStorageKey)
+    if (durableBuffer?.length) {
+      return durableBuffer
+    }
+  }
+  if (job?.outputPath && existsSync(job.outputPath)) {
+    return readFileSync(job.outputPath)
+  }
+  if (job?.outputFileName) {
+    return readBlobBuffer(outputStorageKey(job.id, job.outputFileName))
+  }
+  return null
 }
 
 function splitJobSettings(settings = {}) {
@@ -359,28 +563,39 @@ async function diagnoseProviders(settings = {}) {
   return diagnostics
 }
 
-async function processJob(jobId) {
+async function processJob(jobId, options = {}) {
   if (activeJobs.has(jobId)) {
     return activeJobs.get(jobId)
   }
 
   const run = (async () => {
-    const job = readJob(jobId)
+    const job = await readJob(jobId)
     if (!job) {
       return
     }
 
-    const sourcePath = sessionFilePath(job.sessionId)
-    if (!existsSync(sourcePath)) {
+    if (options.sourceBuffer?.length) {
+      await writeSessionSource(job.sessionId, options.sourceBuffer)
+    }
+
+    const sourceBuffer = await readSessionSource(job.sessionId)
+    if (!sourceBuffer?.length) {
       const failed = {
         ...job,
         status: 'failed',
         updatedAt: nowIso(),
         error: 'Zdrojový EPUB už není dostupný v upload storage.',
       }
-      writeJob(failed)
+      await writeJob(failed)
       return
     }
+
+    const checkpoint = (await readCheckpoint(jobId)) || {
+      jobId,
+      updatedAt: '',
+      sections: {},
+    }
+    const checkpointCount = Object.keys(checkpoint.sections || {}).length
 
     const started = {
       ...job,
@@ -390,22 +605,29 @@ async function processJob(jobId) {
       error: '',
       progress: {
         ...job.progress,
-        stage: 'preparing-export',
+        stage: checkpointCount ? 'resuming-export' : 'preparing-export',
+        currentSectionId: '',
+        currentSectionTitle: '',
+        percent:
+          checkpointCount && job.plan?.translatedSections
+            ? Number(((checkpointCount / job.plan.translatedSections) * 100).toFixed(2))
+            : job.progress?.percent || 0,
       },
     }
-    writeJob(started)
+    await writeJob(started)
 
     try {
       const result = await exportTranslatedEpub({
-        buffer: readFileSync(sourcePath),
+        buffer: sourceBuffer,
         fileName: job.fileName,
         provider: job.provider,
         sourceLanguage: job.sourceLanguage,
         targetLanguage: job.targetLanguage,
         sections: job.sections,
         settings: mergeRuntimeSettings(job),
+        checkpoint,
         onProgress: async (progress) => {
-          const current = readJob(jobId)
+          const current = await readJob(jobId)
           if (!current) {
             return
           }
@@ -434,19 +656,29 @@ async function processJob(jobId) {
                   : 100,
             },
           }
-          writeJob(next)
+          await writeJob(next)
+        },
+        onCheckpoint: async ({ updatedAt, sectionId, section }) => {
+          const currentCheckpoint = (await readCheckpoint(jobId)) || { jobId, updatedAt: '', sections: {} }
+          currentCheckpoint.updatedAt = updatedAt
+          currentCheckpoint.sections = {
+            ...(currentCheckpoint.sections || {}),
+            [sectionId]: section,
+          }
+          await writeCheckpoint(jobId, currentCheckpoint)
         },
       })
 
-      const finalOutputPath = outputFilePath(job.id, result.fileName)
-      writeFileSync(finalOutputPath, result.buffer)
+      const output = await writeOutput(job.id, result.fileName, result.buffer)
+      await deleteCheckpoint(jobId)
 
       const completed = {
-        ...readJob(jobId),
+        ...(await readJob(jobId)),
         status: 'completed',
         updatedAt: nowIso(),
         completedAt: nowIso(),
-        outputPath: finalOutputPath,
+        outputPath: output.localPath,
+        outputStorageKey: output.storageKey,
         outputFileName: result.fileName,
         progress: {
           stage: 'completed',
@@ -467,15 +699,15 @@ async function processJob(jobId) {
           translatedSections: result.stats.translatedSections,
         },
       }
-      writeJob(completed)
+      await writeJob(completed)
     } catch (error) {
       const failed = {
-        ...readJob(jobId),
+        ...(await readJob(jobId)),
         status: 'failed',
         updatedAt: nowIso(),
         error: error instanceof Error ? error.message : 'Unknown error',
       }
-      writeJob(failed)
+      await writeJob(failed)
     } finally {
       activeJobs.delete(jobId)
       jobSecrets.delete(jobId)
@@ -486,18 +718,15 @@ async function processJob(jobId) {
   return run
 }
 
-function recoverJobs() {
-  for (const job of listJobs()) {
+async function recoverJobs() {
+  for (const job of await listJobs()) {
     if (!job) {
       continue
     }
 
     const createdAt = new Date(job.createdAt || 0).getTime()
     if (createdAt && Date.now() - createdAt > JOB_TTL_MS && job.sessionId) {
-      const sourcePath = sessionFilePath(job.sessionId)
-      if (existsSync(sourcePath)) {
-        unlinkSync(sourcePath)
-      }
+      await deleteSessionSource(job.sessionId)
     }
 
     if (job.status === 'queued' || job.status === 'processing') {
@@ -510,7 +739,7 @@ function recoverJobs() {
           stage: 'queued',
         },
       }
-      writeJob(requeued)
+      await writeJob(requeued)
       processJob(job.id)
     }
   }
@@ -524,6 +753,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     app: 'ebook-translator-workbench',
     now: new Date().toISOString(),
+    durableStorage: USE_DURABLE_BLOB ? 'vercel-blob' : 'local-filesystem',
   })
 })
 
@@ -562,7 +792,7 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
     })
 
     const sessionId = randomUUID()
-    writeFileSync(sessionFilePath(sessionId), req.file.buffer)
+    await writeSessionSource(sessionId, req.file.buffer)
 
     return res.json({ ...analysis, sessionId })
   } catch (error) {
@@ -579,7 +809,7 @@ app.post('/api/translate-preview', upload.single('file'), async (req, res) => {
     const result =
       req.file || payload?.sessionId
         ? await translatePreviewFromEpub({
-            buffer: resolveSourceBuffer(payload, req.file),
+            buffer: await resolveSourceBuffer(payload, req.file),
             ...payload,
           })
         : await translateSelectedSections(payload)
@@ -592,35 +822,79 @@ app.post('/api/translate-preview', upload.single('file'), async (req, res) => {
   }
 })
 
-app.get('/api/jobs', (_req, res) => {
-  res.json(listJobs().map(publicJob))
+app.get('/api/jobs', async (_req, res) => {
+  const jobs = await listJobs()
+  res.json(await Promise.all(jobs.map(publicJob)))
 })
 
-app.get('/api/jobs/:id', (req, res) => {
-  const job = readJob(req.params.id)
+app.get('/api/jobs/:id', async (req, res) => {
+  const job = await readJob(req.params.id)
   if (!job) {
     return res.status(404).json({ error: 'Job nebyl nalezen.' })
   }
 
-  return res.json(publicJob(job))
+  return res.json(await publicJob(job))
 })
 
-app.get('/api/jobs/:id/download', (req, res) => {
-  const job = readJob(req.params.id)
-  if (!job || job.status !== 'completed' || !job.outputPath || !existsSync(job.outputPath)) {
+app.get('/api/jobs/:id/download', async (req, res) => {
+  const job = await readJob(req.params.id)
+  const output = job?.status === 'completed' ? await readOutput(job) : null
+  if (!job || !output) {
     return res.status(404).json({ error: 'Výstupní EPUB zatím není k dispozici.' })
   }
 
   res.setHeader('Content-Type', 'application/epub+zip')
   res.setHeader('Content-Disposition', `attachment; filename="${job.outputFileName}"`)
-  return res.send(readFileSync(job.outputPath))
+  return res.send(output)
+})
+
+app.post('/api/jobs/:id/resume', upload.single('file'), async (req, res) => {
+  try {
+    const job = await readJob(req.params.id)
+    if (!job) {
+      return res.status(404).json({ error: 'Job nebyl nalezen.' })
+    }
+    if (job.status === 'completed') {
+      return res.status(409).json({ error: 'Job už je dokončený.' })
+    }
+    if (job.status === 'processing' && activeJobs.has(job.id)) {
+      return res.status(409).json({ error: 'Job už právě běží.', job: await publicJob(job) })
+    }
+
+    const payload = parseBodyPayload(req)
+    const sourceBuffer = await resolveSourceBuffer({ sessionId: job.sessionId }, req.file)
+    const { publicSettings, secretSettings } = splitJobSettings(payload?.settings || job.settings || {})
+    const resumed = {
+      ...job,
+      status: 'queued',
+      updatedAt: nowIso(),
+      resumedAt: nowIso(),
+      error: '',
+      settings: publicSettings,
+      progress: {
+        ...(job.progress || {}),
+        stage: (await readCheckpoint(job.id)) ? 'resuming-export' : 'queued',
+      },
+    }
+
+    await writeJob(resumed)
+    jobSecrets.set(job.id, secretSettings)
+    processJob(job.id, { sourceBuffer })
+
+    return res.status(202).json(await publicJob(resumed))
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      error: error?.statusCode ? (error.message || 'Nepodařilo se obnovit překlad.') : 'Nepodařilo se obnovit překlad.',
+      detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
+    })
+  }
 })
 
 app.post('/api/jobs', upload.single('file'), async (req, res) => {
   try {
     const payload = parseBodyPayload(req)
     const sessionId = payload?.sessionId || randomUUID()
-    const sourceBuffer = resolveSourceBuffer(payload, req.file)
+    const sourceBuffer = await resolveSourceBuffer(payload, req.file)
     const analysisSummary = payload?.analysisSummary || {}
     const { publicSettings, secretSettings } = splitJobSettings(payload?.settings || {})
     const plan = await buildExportPlan({
@@ -673,11 +947,12 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
       outputFileName: '',
     }
 
-    writeJob(job)
+    await writeSessionSource(sessionId, sourceBuffer)
+    await writeJob(job)
     jobSecrets.set(job.id, secretSettings)
-    processJob(job.id)
+    processJob(job.id, { sourceBuffer })
 
-    return res.status(202).json(publicJob(job))
+    return res.status(202).json(await publicJob(job))
   } catch (error) {
     return res.status(error.statusCode || 500).json({
       error: error?.statusCode ? (error.message || 'Nepodařilo se založit export job.') : 'Nepodařilo se založit export job.',
@@ -688,7 +963,9 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
 
 const port = Number(process.env.PORT || 4317)
 
-recoverJobs()
+recoverJobs().catch((error) => {
+  console.error('[recoverJobs] failed', error)
+})
 
 app.listen(port, () => {
   console.log(`ebook-translator-backend listening on http://localhost:${port}`)

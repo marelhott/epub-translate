@@ -767,13 +767,13 @@ function shouldUseOpenRouter(provider, settings = {}) {
   return openrouter.useForAll && Boolean(openrouter.apiKey) && ['openai', 'claude', 'google', 'glm'].includes(provider)
 }
 
-function providerTimeoutSignal(timeoutMs = 45000) {
+function providerTimeoutSignal(timeoutMs = 120000) {
   return AbortSignal.timeout(timeoutMs)
 }
 
-function providerTimeoutMs(provider, baseTimeoutMs = 45000) {
-  if (provider === 'glm') {
-    return 90000
+function providerTimeoutMs(provider, baseTimeoutMs = 120000) {
+  if (['openai', 'claude', 'glm'].includes(provider)) {
+    return 240000
   }
   return baseTimeoutMs
 }
@@ -785,7 +785,7 @@ function normalizeProviderError(error, provider) {
     error?.name === 'TimeoutError' ||
     /aborted|timeout/i.test(message)
   ) {
-    return new Error(`Provider ${provider} neodpověděl do 45 sekund.`)
+    return new Error(`Provider ${provider} neodpověděl do ${Math.round(providerTimeoutMs(provider) / 1000)} sekund.`)
   }
   return error instanceof Error ? error : new Error(message)
 }
@@ -811,6 +811,7 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
     body: JSON.stringify({
       model,
       temperature: 0.2,
+      max_tokens: 16384,
       messages: [
         {
           role: 'system',
@@ -952,6 +953,27 @@ async function translateTexts(provider, texts, options) {
     }
   }
 
+  if (['openai', 'claude', 'glm'].includes(provider) && misses.length) {
+    try {
+      const missingTranslations = await translateManyWithLlm(provider, misses, options)
+      misses.forEach((item, missIndex) => {
+        const translation = missingTranslations[missIndex] || ''
+        translations[item.index] = translation
+        cache[item.key] = {
+          provider,
+          sourceLanguage: options.sourceLanguage || '',
+          targetLanguage: options.targetLanguage || '',
+          translation,
+          updatedAt: new Date().toISOString(),
+        }
+      })
+      saveCache(cache)
+      return { translations, cacheHits, cacheMisses: misses.length }
+    } catch (error) {
+      console.warn(`[translateTexts] batched ${provider} translation failed, falling back to serial`, error?.message)
+    }
+  }
+
   for (const item of misses) {
     let output = ''
     try {
@@ -979,6 +1001,101 @@ async function translateTexts(provider, texts, options) {
   }
 
   return { translations, cacheHits, cacheMisses: misses.length }
+}
+
+function chunkTranslationMisses(misses, { maxItems = 16, maxChars = 12000 } = {}) {
+  const chunks = []
+  let current = []
+  let currentChars = 0
+
+  for (const item of misses) {
+    const itemChars = String(item.source || '').length
+    if (current.length && (current.length >= maxItems || currentChars + itemChars > maxChars)) {
+      chunks.push(current)
+      current = []
+      currentChars = 0
+    }
+    current.push(item)
+    currentChars += itemChars
+  }
+
+  if (current.length) {
+    chunks.push(current)
+  }
+
+  return chunks
+}
+
+function extractJsonTranslationArray(raw) {
+  const text = String(raw || '').trim()
+  const candidates = [
+    text,
+    text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim(),
+  ]
+
+  const arrayMatch = text.match(/\[[\s\S]*\]/)
+  if (arrayMatch?.[0]) {
+    candidates.push(arrayMatch[0])
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) =>
+          typeof item === 'string'
+            ? item
+            : String(item?.translation || item?.text || item?.value || '')
+        )
+      }
+      if (Array.isArray(parsed?.translations)) {
+        return parsed.translations.map((item) =>
+          typeof item === 'string'
+            ? item
+            : String(item?.translation || item?.text || item?.value || '')
+        )
+      }
+    } catch {}
+  }
+
+  return null
+}
+
+async function translateManyWithLlm(provider, misses, options) {
+  const chunks = chunkTranslationMisses(misses)
+  const outputs = []
+
+  for (const chunk of chunks) {
+    const payload = chunk.map((item, index) => ({
+      index,
+      format: item.format || 'text',
+      text: item.source,
+    }))
+
+    const raw = await withRetry(
+      () =>
+        translators[provider]({
+          text:
+            `Translate this JSON array from ${options.sourceLanguage || 'auto'} to ${options.targetLanguage || 'cs'}.\n` +
+            'Return ONLY a valid JSON array of strings with the exact same length and order.\n' +
+            'Each item may be an HTML fragment. Preserve all tags and attributes inside each fragment and translate only visible text.\n\n' +
+            JSON.stringify(payload),
+          sourceLanguage: options.sourceLanguage,
+          targetLanguage: options.targetLanguage,
+          format: 'text',
+          settings: options.settings,
+        }),
+      { retries: 2, initialDelayMs: 800, label: `${provider} batch translation` }
+    )
+
+    const parsed = extractJsonTranslationArray(raw)
+    if (!parsed || parsed.length !== chunk.length) {
+      throw new Error(`Batched ${provider} translation returned invalid JSON length.`)
+    }
+    outputs.push(...parsed)
+  }
+
+  return outputs
 }
 
 export async function buildExportPlan(payload) {
@@ -1450,13 +1567,14 @@ async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, forma
 
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
-    signal: providerTimeoutSignal(),
+    signal: providerTimeoutSignal(providerTimeoutMs('openai')),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       model: settings?.openai?.model || process.env.OPENAI_TRANSLATION_MODEL || 'gpt-5.4',
+      max_output_tokens: 16384,
       input: [
         {
           role: 'system',
@@ -1579,7 +1697,7 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    signal: providerTimeoutSignal(),
+    signal: providerTimeoutSignal(providerTimeoutMs('claude')),
     headers: {
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
@@ -1588,7 +1706,7 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
     body: JSON.stringify({
       model:
         settings?.claude?.model || process.env.ANTHROPIC_TRANSLATION_MODEL || 'claude-sonnet-4-6',
-      max_tokens: format === 'html' ? 8192 : 4096,
+      max_tokens: 16384,
       system:
         format === 'html'
           ? 'Translate non-fiction book text inside HTML fragments. Preserve the exact HTML tags and structure, translate only the visible text, and output HTML only.'
@@ -1640,6 +1758,7 @@ async function translateWithGlm({ text, sourceLanguage, targetLanguage, format =
     body: JSON.stringify({
       model,
       temperature: 0.2,
+      max_tokens: 16384,
       messages: [
         {
           role: 'system',
@@ -2030,6 +2149,8 @@ export async function exportTranslatedEpub(payload) {
     sections = [],
     settings = {},
     onProgress = null,
+    checkpoint = null,
+    onCheckpoint = null,
   } = payload || {}
 
   if (!buffer) {
@@ -2044,6 +2165,7 @@ export async function exportTranslatedEpub(payload) {
   const includedIds = includedSections.map((section) => section.id)
   const includedHrefs = new Set(includedSections.map((section) => section.href))
   const preparationWeight = 8
+  const checkpointSections = checkpoint?.sections || {}
   let cacheHits = 0
   let cacheMisses = 0
   let processedBlocks = 0
@@ -2094,7 +2216,41 @@ export async function exportTranslatedEpub(payload) {
     }
   }
 
+  const resumableTasks = []
   for (const task of sectionTasks) {
+    const savedSection = checkpointSections[task.section.id]
+    if (savedSection?.translatedHtml) {
+      zip.file(task.section.href, savedSection.translatedHtml)
+      processedBlocks += savedSection.processedBlocks || task.texts.length
+      processedWords += savedSection.processedWords || task.section.wordCount || task.section.stats?.wordCount || 0
+      cacheHits += savedSection.cacheHits || 0
+      cacheMisses += savedSection.cacheMisses || 0
+      continue
+    }
+    resumableTasks.push(task)
+  }
+
+  if (onProgress && processedBlocks > 0) {
+    await onProgress({
+      stage: 'resuming-export',
+      processedBlocks,
+      totalBlocks,
+      processedWords,
+      totalWords,
+      processedPages: Number((processedWords / 300).toFixed(2)),
+      totalPages: Math.max(1, Math.ceil(totalWords / 300)),
+      cacheHits,
+      cacheMisses,
+      currentSectionId: '',
+      currentSectionTitle: '',
+      percent:
+        totalBlocks > 0
+          ? Number((preparationWeight + (processedBlocks / totalBlocks) * (100 - preparationWeight)).toFixed(2))
+          : preparationWeight,
+    })
+  }
+
+  for (const task of resumableTasks) {
     const { section, trimmedHtml, texts } = task
     const translationBatch = await withRetry(
       () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
@@ -2106,6 +2262,23 @@ export async function exportTranslatedEpub(payload) {
     processedWords += section.wordCount || section.stats?.wordCount || 0
     const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
     zip.file(section.href, nextHtml)
+
+    if (onCheckpoint) {
+      await onCheckpoint({
+        updatedAt: new Date().toISOString(),
+        sectionId: section.id,
+        section: {
+          id: section.id,
+          href: section.href,
+          title: section.title,
+          translatedHtml: nextHtml,
+          processedBlocks: texts.length,
+          processedWords: section.wordCount || section.stats?.wordCount || 0,
+          cacheHits: translationBatch.cacheHits,
+          cacheMisses: translationBatch.cacheMisses,
+        },
+      })
+    }
 
     if (onProgress) {
       await onProgress({

@@ -10,3 +10,4 @@ backend/data/
 backend/backend/
 *.clean.epub
 .vercel
+.env*.local
