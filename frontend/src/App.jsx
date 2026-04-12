@@ -1152,12 +1152,6 @@ export default function App() {
               </button>
             </div>
 
-            {backendHealth?.durableStorage && backendHealth.durableStorage !== 'vercel-blob' ? (
-              <div className="wb-storage-warning wb-storage-warning--standalone">
-                Durable storage není aktivní. Produkce potřebuje BLOB_READ_WRITE_TOKEN.
-              </div>
-            ) : null}
-
             {jobs.length ? (
               <div className="wb-job-history">
                 <div className="wb-job-history-head">

@@ -2,7 +2,6 @@ import dotenv from 'dotenv'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
-import { del as blobDel, list as blobList, put as blobPut } from '@vercel/blob'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,9 +25,6 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150
 const activeJobs = new Map()
 const jobSecrets = new Map()
 const JOB_TTL_MS = 1000 * 60 * 60 * 24
-const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN || ''
-const USE_DURABLE_BLOB = Boolean(BLOB_TOKEN)
-const BLOB_PREFIX = 'ebook-translator'
 
 function nowIso() {
   return new Date().toISOString()
@@ -38,90 +34,16 @@ function sessionFilePath(sessionId) {
   return join(UPLOADS_DIR, `${sessionId}.epub`)
 }
 
-function sessionStorageKey(sessionId) {
-  return `${BLOB_PREFIX}/uploads/${sessionId}.epub`
-}
-
 function jobFilePath(jobId) {
   return join(JOBS_DIR, `${jobId}.json`)
-}
-
-function jobStorageKey(jobId) {
-  return `${BLOB_PREFIX}/jobs/${jobId}.json`
 }
 
 function checkpointFilePath(jobId) {
   return join(JOBS_DIR, `${jobId}.checkpoint.json`)
 }
 
-function checkpointStorageKey(jobId) {
-  return `${BLOB_PREFIX}/jobs/${jobId}.checkpoint.json`
-}
-
 function outputFilePath(jobId, fileName) {
   return join(OUTPUTS_DIR, `${jobId}__${fileName}`)
-}
-
-function outputStorageKey(jobId, fileName) {
-  return `${BLOB_PREFIX}/outputs/${jobId}__${fileName}`
-}
-
-async function findBlob(pathname) {
-  if (!USE_DURABLE_BLOB) {
-    return null
-  }
-  const result = await blobList({ prefix: pathname, limit: 1, token: BLOB_TOKEN })
-  return result.blobs.find((item) => item.pathname === pathname) || null
-}
-
-async function readBlobBuffer(pathname) {
-  const blob = await findBlob(pathname)
-  if (!blob?.url) {
-    return null
-  }
-  const url = new URL(blob.url)
-  url.searchParams.set('cacheBust', String(Date.now()))
-  const response = await fetch(url, {
-    cache: 'no-store',
-    headers: { 'Cache-Control': 'no-cache' },
-  })
-  if (!response.ok) {
-    return null
-  }
-  return Buffer.from(await response.arrayBuffer())
-}
-
-async function writeBlob(pathname, body, contentType) {
-  if (!USE_DURABLE_BLOB) {
-    return
-  }
-  await blobPut(pathname, body, {
-    access: 'public',
-    addRandomSuffix: false,
-    allowOverwrite: true,
-    cacheControlMaxAge: 60,
-    contentType,
-    token: BLOB_TOKEN,
-  })
-}
-
-async function deleteBlob(pathname) {
-  const blob = await findBlob(pathname)
-  if (blob?.url) {
-    await blobDel(blob.url, { token: BLOB_TOKEN })
-  }
-}
-
-async function readJsonFromBlob(pathname) {
-  const buffer = await readBlobBuffer(pathname)
-  if (!buffer) {
-    return null
-  }
-  try {
-    return JSON.parse(buffer.toString('utf-8'))
-  } catch {
-    return null
-  }
 }
 
 function hasZipSignature(buffer) {
@@ -166,10 +88,6 @@ async function resolveSourceBuffer(payload, file) {
 
   const sessionId = payload?.sessionId
   const sourcePath = sessionId ? sessionFilePath(sessionId) : ''
-  const durableBuffer = sessionId ? await readBlobBuffer(sessionStorageKey(sessionId)) : null
-  if (durableBuffer?.length) {
-    return durableBuffer
-  }
   if (sessionId && existsSync(sourcePath)) {
     return readFileSync(sourcePath)
   }
@@ -180,11 +98,6 @@ async function resolveSourceBuffer(payload, file) {
 }
 
 async function readJob(jobId) {
-  const durableJob = await readJsonFromBlob(jobStorageKey(jobId))
-  if (durableJob) {
-    return durableJob
-  }
-
   const path = jobFilePath(jobId)
   if (!existsSync(path)) {
     return null
@@ -199,15 +112,9 @@ async function readJob(jobId) {
 
 async function writeJob(job) {
   writeFileSync(jobFilePath(job.id), JSON.stringify(job, null, 2), 'utf-8')
-  await writeBlob(jobStorageKey(job.id), JSON.stringify(job, null, 2), 'application/json')
 }
 
 async function readCheckpoint(jobId) {
-  const durableCheckpoint = await readJsonFromBlob(checkpointStorageKey(jobId))
-  if (durableCheckpoint) {
-    return durableCheckpoint
-  }
-
   const path = checkpointFilePath(jobId)
   if (!existsSync(path)) {
     return null
@@ -222,7 +129,6 @@ async function readCheckpoint(jobId) {
 
 async function writeCheckpoint(jobId, checkpoint) {
   writeFileSync(checkpointFilePath(jobId), JSON.stringify(checkpoint, null, 2), 'utf-8')
-  await writeBlob(checkpointStorageKey(jobId), JSON.stringify(checkpoint, null, 2), 'application/json')
 }
 
 async function deleteCheckpoint(jobId) {
@@ -230,26 +136,10 @@ async function deleteCheckpoint(jobId) {
   if (existsSync(path)) {
     unlinkSync(path)
   }
-  await deleteBlob(checkpointStorageKey(jobId))
 }
 
 async function listJobs() {
   const byId = new Map()
-
-  if (USE_DURABLE_BLOB) {
-    const result = await blobList({ prefix: `${BLOB_PREFIX}/jobs/`, limit: 1000, token: BLOB_TOKEN })
-    for (const item of result.blobs) {
-      const name = item.pathname.split('/').pop() || ''
-      if (!name.endsWith('.json') || name.endsWith('.checkpoint.json')) {
-        continue
-      }
-      const id = name.replace(/\.json$/, '')
-      const job = await readJob(id)
-      if (job?.id) {
-        byId.set(job.id, job)
-      }
-    }
-  }
 
   for (const name of readdirSync(JOBS_DIR)) {
     if (!name.endsWith('.json') || name.endsWith('.checkpoint.json')) {
@@ -300,21 +190,13 @@ async function publicJob(job) {
 
 async function writeSessionSource(sessionId, buffer) {
   writeFileSync(sessionFilePath(sessionId), buffer)
-  await writeBlob(sessionStorageKey(sessionId), buffer, 'application/epub+zip')
 }
 
 async function sourceExists(sessionId) {
-  return Boolean(
-    (USE_DURABLE_BLOB && (await findBlob(sessionStorageKey(sessionId)))) ||
-      existsSync(sessionFilePath(sessionId))
-  )
+  return existsSync(sessionFilePath(sessionId))
 }
 
 async function readSessionSource(sessionId) {
-  const durableBuffer = await readBlobBuffer(sessionStorageKey(sessionId))
-  if (durableBuffer?.length) {
-    return durableBuffer
-  }
   const sourcePath = sessionFilePath(sessionId)
   return existsSync(sourcePath) ? readFileSync(sourcePath) : null
 }
@@ -324,28 +206,17 @@ async function deleteSessionSource(sessionId) {
   if (existsSync(sourcePath)) {
     unlinkSync(sourcePath)
   }
-  await deleteBlob(sessionStorageKey(sessionId))
 }
 
 async function writeOutput(jobId, fileName, buffer) {
   const localPath = outputFilePath(jobId, fileName)
   writeFileSync(localPath, buffer)
-  await writeBlob(outputStorageKey(jobId, fileName), buffer, 'application/epub+zip')
-  return { localPath, storageKey: outputStorageKey(jobId, fileName) }
+  return { localPath }
 }
 
 async function readOutput(job) {
-  if (job?.outputStorageKey) {
-    const durableBuffer = await readBlobBuffer(job.outputStorageKey)
-    if (durableBuffer?.length) {
-      return durableBuffer
-    }
-  }
   if (job?.outputPath && existsSync(job.outputPath)) {
     return readFileSync(job.outputPath)
-  }
-  if (job?.outputFileName) {
-    return readBlobBuffer(outputStorageKey(job.id, job.outputFileName))
   }
   return null
 }
@@ -685,7 +556,6 @@ async function processJob(jobId, options = {}) {
         updatedAt: nowIso(),
         completedAt: nowIso(),
         outputPath: output.localPath,
-        outputStorageKey: output.storageKey,
         outputFileName: result.fileName,
         progress: {
           stage: 'completed',
@@ -760,7 +630,8 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     app: 'ebook-translator-workbench',
     now: new Date().toISOString(),
-    durableStorage: USE_DURABLE_BLOB ? 'vercel-blob' : 'local-filesystem',
+    durableStorage: 'local-filesystem',
+    storageMode: 'local-runtime',
   })
 })
 
