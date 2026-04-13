@@ -455,6 +455,7 @@ export default function App() {
   const [statusText, setStatusText] = useState('Nahraj EPUB, ověř preview, spusť překlad.')
   const [job, setJob] = useState(null)
   const [jobs, setJobs] = useState([])
+  const [resumableJob, setResumableJob] = useState(null)
   const [backendHealth, setBackendHealth] = useState(null)
   const [exportMeta, setExportMeta] = useState(null)
   const [preview, setPreview] = useState(null)
@@ -672,6 +673,7 @@ export default function App() {
     if (!file) return
     setOriginalBookData(null); setTranslatedBookData(null); setTranslatedBlob(null)
     setPreview(null); setJob(null); setExportMeta(null); setError('')
+    setResumableJob(null)
     setStatusText('Načítám knihu…')
     const formData = new FormData()
     formData.append('file', file)
@@ -685,7 +687,18 @@ export default function App() {
       setOriginalBookData(fileBuffer)
       setAnalysis(payload)
       setSelectedProvider('deepl')
-      setStatusText('Kniha připravena. Ověř preview, pak spusť překlad.')
+      // Check for a resumable job matching this file
+      const matchingJob = jobs.find((j) =>
+        j.status !== 'completed' &&
+        j.fileName === file.name &&
+        (j.progress?.percent || 0) > 0
+      )
+      if (matchingJob) {
+        setResumableJob(matchingJob)
+        setStatusText(`Nalezen přerušený překlad (${Math.round(matchingJob.progress?.percent || 0)}%). Můžeš pokračovat nebo začít znovu.`)
+      } else {
+        setStatusText('Kniha připravena. Ověř preview, pak spusť překlad.')
+      }
     } catch (uploadError) {
       setError(uploadError.message)
       setStatusText('Analýza selhala.')
@@ -1135,6 +1148,26 @@ export default function App() {
             </div>
 
             <div className="wb-actions">
+              {resumableJob && originalBookData ? (
+                <div className="wb-resume-banner">
+                  <div className="wb-resume-banner-text">
+                    Nalezen přerušený překlad – <strong>{Math.round(resumableJob.progress?.percent || 0)}%</strong> hotovo
+                    ({providerVersion(resumableJob.provider)})
+                  </div>
+                  <button
+                    className="wb-btn wb-btn--translate"
+                    onClick={() => { setResumableJob(null); resumeTranslation(resumableJob) }}
+                  >
+                    Pokračovat v překladu
+                  </button>
+                  <button
+                    className="wb-btn wb-btn--secondary"
+                    onClick={() => setResumableJob(null)}
+                  >
+                    Začít znovu
+                  </button>
+                </div>
+              ) : null}
               <button
                 className="wb-btn wb-btn--preview"
                 disabled={!includedSections.length || isPreviewLoading}

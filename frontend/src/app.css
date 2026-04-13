@@ -1089,6 +1089,31 @@
 /* ════════════════════════════════════════════════════════
    RIGHT: ACTIONS
 ════════════════════════════════════════════════════════ */
+.wb-resume-banner {
+  background: rgba(37, 99, 235, 0.07);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wb-resume-banner-text {
+  font-size: 13px;
+  color: #2450b8;
+  line-height: 1.4;
+}
+.wb-btn--secondary {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.08);
+  color: #666;
+  font-size: 12px;
+}
+.wb-btn--secondary:hover:not(:disabled) {
+  background: rgba(0,0,0,0.08);
+  color: #444;
+}
+
 .wb-actions {
   padding: 12px;
   border-bottom: 1px solid var(--border-soft);
