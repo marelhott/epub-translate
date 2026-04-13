@@ -197,6 +197,8 @@ function stageLabel(stage) {
   if (stage === 'preparing-export') return 'příprava sekcí'
   if (stage === 'resuming-export') return 'obnova checkpointu'
   if (stage === 'translating') return 'překládání'
+  if (stage === 'reviewing-html') return 'kontrola sekcí'
+  if (stage === 'reviewing-html-section') return 'kontroluju sekci'
   if (stage === 'completed') return 'dokončeno'
   if (stage === 'interrupted') return 'přerušeno'
   if (stage === 'queued') return 've frontě'
@@ -215,9 +217,12 @@ function sanitizeSettings(settings) {
     glm: { ...settings.glm },
   }
 }
+const API_BASE_URL =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL
+    ? String(import.meta.env.VITE_API_BASE_URL).replace(/\/$/, '')
+    : '')
 function apiUrl(path) {
-  if (typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')) return `/_/backend${path}`
-  return path
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path
 }
 async function parseJsonSafely(response) {
   const text = await response.text()
@@ -765,6 +770,8 @@ export default function App() {
     if (!reviewJob?.startedAt) return 0
     return Math.max(0.02, (Date.now() - new Date(reviewJob.startedAt).getTime()) / 60000)
   }, [reviewJob])
+
+  const isHostedFrontend = typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')
 
   function updateSettings(section, field, value) {
     setSettings((cur) => ({ ...cur, [section]: { ...cur[section], [field]: value } }))
@@ -1607,6 +1614,11 @@ export default function App() {
 
               <div className="wb-action-group wb-action-group--review">
                 <div className="wb-action-group-head">LLM kontrola překladu</div>
+                {isHostedFrontend ? (
+                  <div className="wb-storage-warning wb-storage-warning--inline">
+                    Pro dlouhé LLM operace je stabilnější lokální backend. Frontend na Vercelu je v pohodě, ale backend připoj přes <strong>VITE_API_BASE_URL</strong>.
+                  </div>
+                ) : null}
                 <button
                   className="wb-btn wb-btn--review-claude"
                   disabled={!importedHtmlMeta || reviewJob?.status === 'processing'}

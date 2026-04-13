@@ -1365,6 +1365,11 @@
   margin: 10px 12px 0;
 }
 
+.wb-storage-warning--inline {
+  margin-bottom: 4px;
+  border-radius: 10px;
+}
+
 .wb-job-row {
   display: flex;
   align-items: center;

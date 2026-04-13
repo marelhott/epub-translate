@@ -390,17 +390,21 @@ async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtm
     'Do not rewrite for style unless the current Czech is clearly wrong or awkward. Do not add commentary, markdown, wrappers, or explanations. ' +
     'Return ONLY the corrected Czech HTML fragment body.'
 
-  const response = await reviewer({
-    text:
-      `Section title: ${title || 'Untitled'}\n\n` +
-      `<original_html>\n${originalHtml}\n</original_html>\n\n` +
-      `<translated_html>\n${translatedHtml}\n</translated_html>`,
-    sourceLanguage: 'en',
-    targetLanguage: 'cs',
-    format: 'text',
-    settings,
-    systemPrompt,
-  })
+  const response = await withRetry(
+    () =>
+      reviewer({
+        text:
+          `Section title: ${title || 'Untitled'}\n\n` +
+          `<original_html>\n${originalHtml}\n</original_html>\n\n` +
+          `<translated_html>\n${translatedHtml}\n</translated_html>`,
+        sourceLanguage: 'en',
+        targetLanguage: 'cs',
+        format: 'text',
+        settings,
+        systemPrompt,
+      }),
+    { retries: 2, initialDelayMs: 900, label: `${provider} html review` }
+  )
 
   return extractReviewedHtmlFragment(response, translatedHtml)
 }
@@ -1744,6 +1748,18 @@ export async function reviewTranslatedHtml(payload) {
     if (!sourceSection?.bodyHtml?.trim() || !translatedSection?.bodyHtml?.trim()) {
       processedSections += 1
       continue
+    }
+
+    if (onProgress) {
+      await onProgress({
+        stage: 'reviewing-html-section',
+        processedSections,
+        totalSections: targetIds.length,
+        currentSectionId: sectionId,
+        currentSectionTitle: translatedSection.title || sourceSection.title || sectionId,
+        changedSections,
+        percent: targetIds.length ? Number((((processedSections + 0.35) / targetIds.length) * 100).toFixed(2)) : 100,
+      })
     }
 
     const reviewedHtml = await reviewHtmlFragmentWithLlm({

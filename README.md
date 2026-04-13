@@ -49,6 +49,22 @@ npm run dev:frontend
 Frontend běží na `http://localhost:5173`.
 Backend běží na `http://localhost:4317`.
 
+## Doporučený režim nasazení
+
+- `Vercel` používej jen pro frontend
+- backend nech běžet lokálně nebo na samostatné backend instanci
+- frontend se k backendu připojuje přes `VITE_API_BASE_URL`
+
+Příklad:
+
+```bash
+VITE_API_BASE_URL=http://localhost:4317 npm run dev:frontend
+```
+
+Na Vercelu nastav:
+
+- `VITE_API_BASE_URL=https://tvoje-backend-url.example.com`
+
 ## Proměnné prostředí
 
 Viz [.env.example](/Volumes/CODEX_DISK/apps/překladač%20ebook/.env.example).
