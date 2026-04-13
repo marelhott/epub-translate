@@ -1497,7 +1497,6 @@ export async function exportEpubToHtml(payload) {
   const zip = await JSZip.loadAsync(buffer)
   const packagePath = await readContainer(zip)
   const pkg = await readPackage(zip, packagePath)
-  const cover = await extractCoverData(zip, packagePath, pkg)
   const includedSections = sections.filter((section) => section.includeInTranslation)
 
   const exportedSections = []
@@ -1517,47 +1516,26 @@ export async function exportEpubToHtml(payload) {
 
   const title = normalizeText(toArray(pkg.metadata?.title)?.[0]?.['#text'] || toArray(pkg.metadata?.title)?.[0] || fileName)
   const author = normalizeText(toArray(pkg.metadata?.creator)?.[0]?.['#text'] || toArray(pkg.metadata?.creator)?.[0] || '')
-  const html = `<!doctype html>
-<html lang="${escapeHtml(targetLanguage || 'cs')}">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="ebook-source-language" content="${escapeHtml(sourceLanguage || '')}" />
-    <meta name="ebook-target-language" content="${escapeHtml(targetLanguage || 'cs')}" />
-    <title>${escapeHtml(title)}${author ? ` — ${escapeHtml(author)}` : ''}</title>
-    <style>
-      body { font-family: Georgia, "Times New Roman", serif; line-height: 1.6; margin: 0; color: #1b1b1b; background: #faf8f2; }
-      main { max-width: 900px; margin: 0 auto; padding: 40px 24px 120px; }
-      .ebook-meta { margin-bottom: 40px; padding-bottom: 24px; border-bottom: 1px solid #d8d1c2; }
-      .ebook-cover { max-width: 160px; display: block; margin-bottom: 20px; border-radius: 6px; }
-      .ebook-title { font-size: 40px; margin: 0 0 8px; }
-      .ebook-author { font-size: 24px; margin: 0 0 16px; color: #5e5a52; }
-      .ebook-note { font-size: 14px; color: #6c675d; }
-      .ebook-section { margin: 0 0 52px; padding-bottom: 36px; border-bottom: 1px solid #e5dfd1; }
-      .ebook-section-label { font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; color: #7c7567; margin: 0 0 18px; }
-      .ebook-section-title { font-size: 28px; margin: 0 0 18px; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header class="ebook-meta">
-        ${cover?.dataUrl ? `<img class="ebook-cover" src="${cover.dataUrl}" alt="${escapeHtml(title)} cover" />` : ''}
-        <h1 class="ebook-title">${escapeHtml(title)}</h1>
-        ${author ? `<p class="ebook-author">${escapeHtml(author)}</p>` : ''}
-        <p class="ebook-note">Externí překladový export. Zachovej HTML tagy i atributy uvnitř sekcí. Nepřekládej technické identifikátory v atributech.</p>
-      </header>
-      ${exportedSections.map((section, index) => `
-        <article class="ebook-section" data-ebook-id="${escapeHtml(section.id)}" data-ebook-href="${escapeHtml(section.href)}">
-          <div class="ebook-section-label">Sekce ${index + 1}</div>
-          <h2 class="ebook-section-title">${escapeHtml(section.title)}</h2>
-          <div class="ebook-section-body">
-            ${section.bodyHtml}
-          </div>
-        </article>
-      `).join('\n')}
-    </main>
-  </body>
-</html>`
+  const html = [
+    '<!doctype html><html lang="', escapeHtml(targetLanguage || 'cs'),
+    '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<meta name="ebook-source-language" content="', escapeHtml(sourceLanguage || ''), '">',
+    '<meta name="ebook-target-language" content="', escapeHtml(targetLanguage || 'cs'), '">',
+    '<title>', escapeHtml(title), author ? ` — ${escapeHtml(author)}` : '', '</title>',
+    '<style>body{font-family:Georgia,\"Times New Roman\",serif;line-height:1.6;margin:0;color:#1b1b1b;background:#faf8f2}main{max-width:900px;margin:0 auto;padding:28px 18px 72px}.ebook-meta{margin-bottom:28px;padding-bottom:18px;border-bottom:1px solid #d8d1c2}.ebook-title{font-size:34px;margin:0 0 6px}.ebook-author{font-size:20px;margin:0 0 12px;color:#5e5a52}.ebook-note{font-size:13px;color:#6c675d}.ebook-section{margin:0 0 32px;padding-bottom:24px;border-bottom:1px solid #e5dfd1}.ebook-section-title{font-size:22px;margin:0 0 14px}.ebook-section-body{display:block}</style>',
+    '</head><body><main><header class="ebook-meta"><h1 class="ebook-title">', escapeHtml(title), '</h1>',
+    author ? `<p class="ebook-author">${escapeHtml(author)}</p>` : '',
+    '<p class="ebook-note">Zachovej HTML tagy a atributy uvnitř sekcí. Nepřekládej technické identifikátory v atributech.</p></header>',
+    exportedSections.map((section) =>
+      `<article class="ebook-section" data-ebook-id="${escapeHtml(section.id)}"><h2 class="ebook-section-title">${escapeHtml(section.title)}</h2><div class="ebook-section-body">${section.bodyHtml.trim()}</div></article>`
+    ).join(''),
+    '</main></body></html>',
+  ].join('')
+
+  const htmlBytes = Buffer.byteLength(html, 'utf8')
+  if (htmlBytes > 4_200_000) {
+    throw new Error('HTML export je pro Vercel příliš velký. Zkus lokální backend nebo menší rozsah knihy.')
+  }
 
   return {
     html,
