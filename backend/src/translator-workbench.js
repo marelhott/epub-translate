@@ -1003,7 +1003,7 @@ async function translateTexts(provider, texts, options) {
   return { translations, cacheHits, cacheMisses: misses.length }
 }
 
-function chunkTranslationMisses(misses, { maxItems = 40, maxChars = 30000 } = {}) {
+function chunkTranslationMisses(misses, { maxItems = 24, maxChars = 18000 } = {}) {
   const chunks = []
   let current = []
   let currentChars = 0
@@ -1063,7 +1063,7 @@ function extractJsonTranslationArray(raw) {
 
 async function translateManyWithLlm(provider, misses, options) {
   const chunks = chunkTranslationMisses(misses)
-  const LLM_CONCURRENCY = 8
+  const LLM_CONCURRENCY = 4
   const outputs = new Array(chunks.length)
 
   for (let start = 0; start < chunks.length; start += LLM_CONCURRENCY) {
@@ -2257,49 +2257,61 @@ export async function exportTranslatedEpub(payload) {
     })
   }
 
-  const SECTION_CONCURRENCY = 6
-  for (let start = 0; start < resumableTasks.length; start += SECTION_CONCURRENCY) {
-    const batch = resumableTasks.slice(start, start + SECTION_CONCURRENCY)
-    const results = await Promise.all(
-      batch.map(async (task) => {
-        const { section, trimmedHtml, texts } = task
-        const translationBatch = await withRetry(
-          () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
-          { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
-        )
-        const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
-        return { task, translationBatch, nextHtml }
+  // Pool-based concurrency: up to 3 sections in flight, progress reported as each finishes
+  const SECTION_CONCURRENCY = 3
+  let taskIndex = 0
+  const inflightSet = new Set()
+
+  function launchNext() {
+    if (taskIndex >= resumableTasks.length) return null
+    const task = resumableTasks[taskIndex++]
+    const { section, trimmedHtml, texts } = task
+    const promise = withRetry(
+      () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
+      { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
+    ).then((translationBatch) => {
+      const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
+      return { task, translationBatch, nextHtml, promise }
+    })
+    inflightSet.add(promise)
+    return promise
+  }
+
+  // Seed the pool
+  for (let i = 0; i < Math.min(SECTION_CONCURRENCY, resumableTasks.length); i++) {
+    launchNext()
+  }
+
+  while (inflightSet.size > 0) {
+    const settled = await Promise.race(inflightSet)
+    inflightSet.delete(settled.promise)
+
+    const { task, translationBatch, nextHtml } = settled
+    const { section, texts } = task
+    cacheHits += translationBatch.cacheHits
+    cacheMisses += translationBatch.cacheMisses
+    processedBlocks += texts.length
+    processedWords += section.wordCount || section.stats?.wordCount || 0
+    zip.file(section.href, nextHtml)
+
+    if (onCheckpoint) {
+      await onCheckpoint({
+        updatedAt: new Date().toISOString(),
+        sectionId: section.id,
+        section: {
+          id: section.id,
+          href: section.href,
+          title: section.title,
+          translatedHtml: nextHtml,
+          processedBlocks: texts.length,
+          processedWords: section.wordCount || section.stats?.wordCount || 0,
+          cacheHits: translationBatch.cacheHits,
+          cacheMisses: translationBatch.cacheMisses,
+        },
       })
-    )
-
-    for (const { task, translationBatch, nextHtml } of results) {
-      const { section, texts } = task
-      cacheHits += translationBatch.cacheHits
-      cacheMisses += translationBatch.cacheMisses
-      processedBlocks += texts.length
-      processedWords += section.wordCount || section.stats?.wordCount || 0
-      zip.file(section.href, nextHtml)
-
-      if (onCheckpoint) {
-        await onCheckpoint({
-          updatedAt: new Date().toISOString(),
-          sectionId: section.id,
-          section: {
-            id: section.id,
-            href: section.href,
-            title: section.title,
-            translatedHtml: nextHtml,
-            processedBlocks: texts.length,
-            processedWords: section.wordCount || section.stats?.wordCount || 0,
-            cacheHits: translationBatch.cacheHits,
-            cacheMisses: translationBatch.cacheMisses,
-          },
-        })
-      }
     }
 
     if (onProgress) {
-      const lastSection = batch[batch.length - 1].section
       await onProgress({
         stage: 'translating',
         processedBlocks,
@@ -2310,14 +2322,17 @@ export async function exportTranslatedEpub(payload) {
         totalPages: Math.max(1, Math.ceil(totalWords / 300)),
         cacheHits,
         cacheMisses,
-        currentSectionId: lastSection.id,
-        currentSectionTitle: lastSection.title,
+        currentSectionId: section.id,
+        currentSectionTitle: section.title,
         percent:
           totalBlocks > 0
             ? Number((preparationWeight + (processedBlocks / totalBlocks) * (100 - preparationWeight)).toFixed(2))
             : 100,
       })
     }
+
+    // Replenish the pool
+    launchNext()
   }
 
   // Update dc:language to target language so Kindle shows correct language metadata
