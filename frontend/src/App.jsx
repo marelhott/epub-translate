@@ -518,7 +518,7 @@ function IconRefresh() {
 ────────────────────────────────────────────────────── */
 export default function App() {
   const [providers, setProviders] = useState([])
-  const [selectedProvider, setSelectedProvider] = useState('deepl')
+  const [selectedProvider, setSelectedProvider] = useState('claude')
   const [analysis, setAnalysis] = useState(null)
   const [error, setError] = useState('')
   const [statusText, setStatusText] = useState('Nahraj EPUB, ověř preview, spusť překlad.')
@@ -776,7 +776,7 @@ export default function App() {
       if (!payload) throw new Error('Server vrátil prázdnou odpověď.')
       setOriginalBookData(fileBuffer)
       setAnalysis(payload)
-      setSelectedProvider('deepl')
+      setSelectedProvider('claude')
       // Check IndexedDB for a saved checkpoint matching this file
       const idbMatch = await idbFindByFileName(file.name).catch(() => null)
       if (idbMatch && idbMatch.sectionCount > 0) {
@@ -843,6 +843,11 @@ export default function App() {
 
   async function startTranslation() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
+    // Prevent duplicate jobs — if a job is already running, ignore
+    if (job?.status === 'processing' || job?.status === 'queued') {
+      setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
+      return
+    }
     setError(''); setExportMeta(null)
     idbSectionsRef.current = 0
     setStatusText('Překlad probíhá…')
@@ -873,6 +878,10 @@ export default function App() {
 
   async function startTranslationWithCheckpoint(idbEntry) {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData || !idbEntry?.sections) return
+    if (job?.status === 'processing' || job?.status === 'queued') {
+      setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
+      return
+    }
     setError(''); setExportMeta(null)
     idbSectionsRef.current = 0
     setStatusText(`Obnovuji překlad z ${idbEntry.sectionCount} uložených sekcí…`)
@@ -905,6 +914,10 @@ export default function App() {
 
   async function resumeTranslation(targetJob) {
     if (!targetJob?.id) return
+    if (job?.status === 'processing' || job?.status === 'queued') {
+      setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
+      return
+    }
     setError('')
     setStatusText('Obnovuji překlad z posledního checkpointu…')
     try {

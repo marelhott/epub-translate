@@ -280,6 +280,31 @@ function fileNameWithoutExtension(name) {
     .trim()
 }
 
+function sanitizeFileName(str) {
+  return String(str || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+}
+
+function buildOutputFileName(metadata, originalFileName, targetLanguage) {
+  const title = sanitizeFileName(
+    normalizeText(toArray(metadata?.title)?.[0]?.['#text'] || toArray(metadata?.title)?.[0] || '')
+  )
+  const author = sanitizeFileName(
+    normalizeText(toArray(metadata?.creator)?.[0]?.['#text'] || toArray(metadata?.creator)?.[0] || '')
+  )
+
+  if (title && author) {
+    return `${author} – ${title} (${targetLanguage}).epub`
+  }
+  if (title) {
+    return `${title} (${targetLanguage}).epub`
+  }
+  return `${fileNameWithoutExtension(originalFileName)} (${targetLanguage}).epub`
+}
+
 function extractBodyText(html) {
   const $ = cheerio.load(html, { xmlMode: true })
 
@@ -666,6 +691,55 @@ function applyTranslationsToHtml(html, translatedPayloads) {
   return $.xml()
 }
 
+// ── Whole-section translation: sends entire HTML section to LLM for full-context translation ──
+
+const WHOLE_SECTION_SYSTEM_PROMPT_CS = `Jsi profesionální překladatel knih do češtiny. Přeložíš celou HTML sekci najednou.
+
+PRAVIDLA:
+- Zachovej PŘESNĚ veškerou HTML strukturu: tagy, atributy, třídy, id, inline styly
+- Přelož POUZE viditelný text uvnitř tagů
+- Zachovej správné české rody po celé sekci (pokud je hlavní postava muž, drž mužský rod konzistentně)
+- Používej přirozenou českou syntax a slovesné vazby
+- Nepřekládej vlastní jména, názvy firem, technické termíny v originálním jazyce
+- Nepřidávej žádné komentáře, vysvětlivky ani poznámky
+- Vrať POUZE přeložený HTML, nic jiného`
+
+async function translateWholeSection(provider, html, options) {
+  const $ = cheerio.load(html, { xmlMode: true })
+  const body = $('body').length ? $('body').html() : html
+  const textContent = normalizeText($.text())
+  if (!textContent) return html
+
+  const raw = await withRetry(
+    () =>
+      translators[provider]({
+        text: body,
+        sourceLanguage: options.sourceLanguage,
+        targetLanguage: options.targetLanguage,
+        format: 'html',
+        settings: options.settings,
+        systemPrompt: WHOLE_SECTION_SYSTEM_PROMPT_CS,
+      }),
+    { retries: 2, initialDelayMs: 1500, label: `${provider} whole-section` }
+  )
+
+  // Validate: must still contain HTML tags
+  if (!raw || !/<[a-z]/i.test(raw)) {
+    throw new Error(`Whole-section ${provider} translation returned non-HTML`)
+  }
+
+  // Re-inject translated body into original HTML shell (preserves <head>, <?xml?>, etc.)
+  if ($('body').length) {
+    let translated = raw.trim()
+    // Strip wrapping <body> if the model added it
+    const bodyMatch = translated.match(/<body[^>]*>([\s\S]*)<\/body>/i)
+    if (bodyMatch?.[1]) translated = bodyMatch[1].trim()
+    $('body').html(translated)
+    return $.xml()
+  }
+  return raw
+}
+
 async function retryHtmlTranslator(translator, basePayload, buildRetryPayload) {
   const initial = await translator(basePayload)
   if (basePayload.format !== 'html' || looksLikeValidTranslatedFragment(basePayload.text, initial)) {
@@ -790,7 +864,7 @@ function normalizeProviderError(error, provider) {
   return error instanceof Error ? error : new Error(message)
 }
 
-async function translateWithOpenRouter({ provider, text, sourceLanguage, targetLanguage, format = 'text', settings }) {
+async function translateWithOpenRouter({ provider, text, sourceLanguage, targetLanguage, format = 'text', settings, systemPrompt }) {
   const openrouter = resolveOpenRouterConfig(settings)
   if (!openrouter.apiKey) {
     throw new Error('Chybí OPENROUTER_API_KEY')
@@ -800,6 +874,11 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
   if (!model) {
     throw new Error(`Pro provider ${provider} chybí OpenRouter model.`)
   }
+
+  const defaultSystemPrompt =
+    format === 'html'
+      ? 'Translate non-fiction book content inside HTML fragments. Preserve the exact HTML tag structure, keep tags unchanged, translate only visible text nodes, and output HTML only.'
+      : 'You translate non-fiction book content faithfully. Preserve terminology, named entities, chronology, and explanatory clarity. Output translation only.'
 
   const response = await fetch(`${String(openrouter.baseUrl).replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -815,21 +894,21 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
       messages: [
         {
           role: 'system',
-          content:
-            format === 'html'
-              ? 'Translate non-fiction book content inside HTML fragments. Preserve the exact HTML tag structure, keep tags unchanged, translate only visible text nodes, and output HTML only.'
-              : 'You translate non-fiction book content faithfully. Preserve terminology, named entities, chronology, and explanatory clarity. Output translation only.',
+          content: systemPrompt || defaultSystemPrompt,
         },
         {
           role: 'user',
-          content: `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
+          content: systemPrompt
+            ? text
+            : `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
         },
       ],
     }),
   })
 
   if (!response.ok) {
-    throw new Error(`OpenRouter request failed: ${response.status}`)
+    const body = await response.text().catch(() => '')
+    throw new Error(`OpenRouter request failed: ${response.status} ${body.slice(0, 200)}`)
   }
 
   const payload = await response.json()
@@ -1328,60 +1407,60 @@ export async function analyzeEpubBuffer(buffer, options = {}) {
 export function buildProviderMatrix() {
   return [
     {
-      id: 'deepl',
-      label: 'DeepL',
-      tier: 'Výchozí',
-      bestFor: 'Biografie, popularizace, evropské jazyky, rychlý stabilní překlad.',
-      setup: 'DEEPL_API_KEY',
-      strengths: ['context', 'glossary', 'style rules', 'custom instructions'],
-      caution: 'Méně flexibilní při velmi nejednoznačných pasážích.',
-      // DeepL API Pro: €25/1M znaků (character-based, přímé API, duben 2026)
-      ratePerMillionCharsEur: 25,
+      id: 'claude',
+      label: 'Claude Sonnet 4.6',
+      tier: 'Doporučený',
+      bestFor: 'Nejlepší čeština — přirozené rody, plynulá syntax, kontextový překlad celých sekcí.',
+      setup: 'OpenRouter API key',
+      strengths: ['přirozená čeština', 'konzistentní rody', 'celé sekce najednou', 'velký kontext'],
+      caution: 'Pomalejší než DeepL, ale výrazně přirozenější výstup.',
+      // Claude Sonnet 4.6 via OpenRouter: $3/1M input + $15/1M output tokenů
+      // Whole-section: ~4 tokenů/znak (CZ), input+output → ~$4.50/1M znaků → €4.14
+      ratePerMillionCharsEur: 4.1,
     },
     {
       id: 'openai',
       label: 'OpenAI GPT-5.4',
-      tier: 'Precision fallback',
-      bestFor: 'Složité vysvětlující pasáže, rod, reference, významová nejednoznačnost.',
-      setup: 'OPENAI_API_KEY',
-      strengths: ['long context', 'reasoning', 'repair pass', 'style alignment'],
-      caution: 'Dražší a pomalejší než DeepL.',
+      tier: 'Alternativa',
+      bestFor: 'Silný překlad s dobrým uvažováním, mírně horší čeština než Claude.',
+      setup: 'OpenRouter API key',
+      strengths: ['long context', 'reasoning', 'celé sekce najednou'],
+      caution: 'Občas nepřirozené české vazby.',
       // GPT-5.4 via OpenRouter: $2.50/1M input + $15/1M output tokenů
-      // ~2500 tokenů/10k znaků (input+output) → ~$4.40/1M znaků → €4.05
+      // ~$4.40/1M znaků → €4.05
       ratePerMillionCharsEur: 4.1,
     },
     {
+      id: 'deepl',
+      label: 'DeepL',
+      tier: 'Rychlý',
+      bestFor: 'Nejrychlejší překlad, dobrá základní kvalita, problémy s českými rody.',
+      setup: 'DEEPL_API_KEY',
+      strengths: ['rychlost', 'glossary', 'nízká latence'],
+      caution: 'Často chybné rody v češtině, méně přirozená syntax.',
+      // DeepL API Pro: €25/1M znaků
+      ratePerMillionCharsEur: 25,
+    },
+    {
       id: 'google',
-      label: 'Google Cloud Translation Advanced',
-      tier: 'Terminology mode',
-      bestFor: 'Glossary, adaptive translation, delší odborné workflow s vlastní terminologií.',
+      label: 'Google Cloud Translation',
+      tier: 'Terminologie',
+      bestFor: 'Glossary a odborná terminologie.',
       setup: 'GOOGLE_CLOUD_ACCESS_TOKEN + GOOGLE_CLOUD_PROJECT',
-      strengths: ['adaptive translation', 'glossary', 'document workflows'],
-      caution: 'Složitější autentizace a provoz.',
+      strengths: ['adaptive translation', 'glossary'],
+      caution: 'Složitější autentizace.',
       // Google Cloud Translation Advanced: $20/1M znaků → €18.40
       ratePerMillionCharsEur: 18.4,
     },
     {
-      id: 'claude',
-      label: 'Claude Sonnet 4.6',
-      tier: 'Optional fallback',
-      bestFor: 'Druhá kontrola formulace a stylu u komplikovaných pasáží.',
-      setup: 'ANTHROPIC_API_KEY',
-      strengths: ['clean prose', 'large context'],
-      caution: 'V první verzi spíš doplněk než hlavní engine.',
-      // Claude Sonnet 4.6 via OpenRouter: $3/1M input + $15/1M output tokenů
-      // ~2500 tokenů/10k znaků → ~$4.50/1M znaků → €4.14
-      ratePerMillionCharsEur: 4.1,
-    },
-    {
       id: 'glm',
       label: 'GLM 5.1',
-      tier: 'Alt LLM translator',
-      bestFor: 'Silný alternativní LLM překlad přes Z.ai nebo OpenRouter fallback.',
-      setup: 'GLM_API_BASE_URL + volitelně GLM_API_KEY',
-      strengths: ['silný multilingual model', 'coding-grade reasoning', 'hostovaný endpoint'],
-      caution: 'Přímý GLM 5.1 obvykle vyžaduje Z.ai endpoint nebo vlastní provider nastavení.',
-      // GLM 5.1 via OpenRouter/Z.ai: ~$0.30/1M znaků → €0.28
+      tier: 'Levný',
+      bestFor: 'Nejlevnější LLM překlad, přijatelná kvalita.',
+      setup: 'OpenRouter API key',
+      strengths: ['nízká cena', 'multilingual'],
+      caution: 'Nižší kvalita češtiny.',
+      // GLM 5.1 via OpenRouter: ~$0.30/1M znaků → €0.28
       ratePerMillionCharsEur: 0.28,
     },
   ]
@@ -2270,24 +2349,42 @@ export async function exportTranslatedEpub(payload) {
     })
   }
 
-  // Pool-based concurrency: up to 3 sections in flight, progress reported as each finishes
-  const SECTION_CONCURRENCY = 3
+  const isLlmProvider = ['openai', 'claude', 'glm'].includes(provider)
+  // LLM: 2 concurrent (whole sections are large); chunk-based: 3 concurrent
+  const SECTION_CONCURRENCY = isLlmProvider ? 2 : 3
   let taskIndex = 0
   const inflightSet = new Set()
 
   function launchNext() {
     if (taskIndex >= resumableTasks.length) return null
     const task = resumableTasks[taskIndex++]
-    const { section, trimmedHtml, texts } = task
-    const promise = withRetry(
-      () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
-      { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
-    ).then((translationBatch) => {
-      const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
-      return { task, translationBatch, nextHtml, promise }
-    })
-    inflightSet.add(promise)
-    return promise
+    const { section, html, trimmedHtml, texts } = task
+
+    let promise
+    if (isLlmProvider) {
+      // Whole-section mode: send full HTML, get full HTML back — preserves context and gender
+      promise = translateWholeSection(provider, trimmedHtml, { sourceLanguage, targetLanguage, settings })
+        .then((nextHtml) => ({
+          task,
+          translationBatch: { cacheHits: 0, cacheMisses: texts.length },
+          nextHtml,
+          promise: null, // filled below
+        }))
+    } else {
+      // Chunk-based mode for DeepL/Google
+      promise = withRetry(
+        () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
+        { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
+      ).then((translationBatch) => {
+        const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
+        return { task, translationBatch, nextHtml, promise: null }
+      })
+    }
+
+    // Attach self-reference for Promise.race tracking
+    const tracked = promise.then((result) => { result.promise = tracked; return result })
+    inflightSet.add(tracked)
+    return tracked
   }
 
   // Seed the pool
@@ -2383,12 +2480,11 @@ export async function exportTranslatedEpub(payload) {
       }
     }
 
-    if (section && !section.includeInTranslation) {
-      zip.remove(resolvedHref)
-    }
+    // Keep all sections in the EPUB — don't remove non-translated ones.
+    // This preserves cover page, images, and original book architecture.
   }
 
-  updatePackageForCleanSpine(pkg, includedIds)
+  // Don't prune the spine — keep original book structure intact
   zip.file(packagePath, xmlBuilder.build({ package: pkg }))
 
   // Rebuild ZIP with mimetype as the first, uncompressed entry (EPUB 3 spec requirement)
@@ -2409,7 +2505,7 @@ export async function exportTranslatedEpub(payload) {
 
   return {
     buffer: rebuilt,
-    fileName: `${fileNameWithoutExtension(fileName)}.${provider}.${targetLanguage}.clean.epub`,
+    fileName: buildOutputFileName(pkg.metadata, fileName, targetLanguage),
     stats: {
       cacheHits,
       cacheMisses,
