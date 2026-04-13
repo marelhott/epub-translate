@@ -13,7 +13,9 @@ import {
   exportTranslatedEpub,
   importTranslatedHtmlToEpub,
   JOBS_DIR,
+  normalizeImportedHtmlArtifacts,
   OUTPUTS_DIR,
+  reviewTranslatedHtml,
   translatePreviewFromEpub,
   translateSelectedSections,
   UPLOADS_DIR,
@@ -34,6 +36,10 @@ function nowIso() {
 
 function sessionFilePath(sessionId) {
   return join(UPLOADS_DIR, `${sessionId}.epub`)
+}
+
+function sessionArtifactPath(sessionId, artifact) {
+  return join(UPLOADS_DIR, `${sessionId}.${artifact}.html`)
 }
 
 function jobFilePath(jobId) {
@@ -200,6 +206,7 @@ async function publicJob(job) {
 
   return {
     id: job.id,
+    kind: job.kind || 'translation',
     sessionId: job.sessionId,
     fileName: job.fileName,
     status: job.status,
@@ -235,6 +242,15 @@ async function sourceExists(sessionId) {
 async function readSessionSource(sessionId) {
   const sourcePath = sessionFilePath(sessionId)
   return existsSync(sourcePath) ? readFileSync(sourcePath) : null
+}
+
+async function writeSessionArtifact(sessionId, artifact, html) {
+  writeFileSync(sessionArtifactPath(sessionId, artifact), String(html || ''), 'utf-8')
+}
+
+async function readSessionArtifact(sessionId, artifact) {
+  const target = sessionArtifactPath(sessionId, artifact)
+  return existsSync(target) ? readFileSync(target, 'utf-8') : ''
 }
 
 async function deleteSessionSource(sessionId) {
@@ -638,6 +654,108 @@ async function processJob(jobId, options = {}) {
   return run
 }
 
+async function processReviewJob(jobId) {
+  if (activeJobs.has(jobId)) {
+    return activeJobs.get(jobId)
+  }
+
+  const run = (async () => {
+    const job = await readJob(jobId)
+    if (!job) return
+
+    try {
+      const originalHtml = await readSessionArtifact(job.sessionId, 'original')
+      const translatedHtml = await readSessionArtifact(job.sessionId, 'translated')
+      if (!originalHtml.trim()) {
+        throw new Error('Chybí původní HTML export. Nejprve vyexportuj HTML z EPUBu.')
+      }
+      if (!translatedHtml.trim()) {
+        throw new Error('Chybí nahraný přeložený HTML soubor.')
+      }
+
+      const started = {
+        ...job,
+        status: 'processing',
+        startedAt: job.startedAt || nowIso(),
+        updatedAt: nowIso(),
+        error: '',
+        progress: {
+          ...(job.progress || {}),
+          stage: 'reviewing-html',
+          processedSections: 0,
+          totalSections: job.sections?.filter((section) => section.includeInTranslation).length || 0,
+          changedSections: 0,
+          currentSectionId: '',
+          currentSectionTitle: '',
+          percent: 0,
+        },
+      }
+      await writeJob(started)
+
+      const result = await reviewTranslatedHtml({
+        originalHtml,
+        translatedHtml,
+        provider: job.provider,
+        settings: mergeRuntimeSettings(job),
+        onProgress: async (progress) => {
+          const current = await readJob(jobId)
+          if (!current) return
+          await writeJob({
+            ...current,
+            status: 'processing',
+            updatedAt: nowIso(),
+            progress: {
+              ...current.progress,
+              ...progress,
+            },
+          })
+        },
+      })
+
+      await writeSessionArtifact(job.sessionId, `reviewed-${job.provider}`, result.html)
+      await writeSessionArtifact(job.sessionId, 'reviewed-latest', result.html)
+
+      await writeJob({
+        ...(await readJob(jobId)),
+        status: 'completed',
+        updatedAt: nowIso(),
+        completedAt: nowIso(),
+        progress: {
+          stage: 'completed',
+          processedSections: result.stats.processedSections,
+          totalSections: result.stats.totalSections,
+          changedSections: result.stats.changedSections,
+          currentSectionId: '',
+          currentSectionTitle: '',
+          percent: 100,
+        },
+        summary: {
+          ...(job.summary || {}),
+          changedSections: result.stats.changedSections,
+          reviewedSections: result.stats.processedSections,
+          title: result.stats.title,
+          author: result.stats.author,
+        },
+      })
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      console.error(`[processReviewJob] job ${jobId} failed:`, errorMessage, error?.stack || '')
+      await writeJob({
+        ...(await readJob(jobId)),
+        status: 'failed',
+        updatedAt: nowIso(),
+        error: errorMessage,
+      })
+    } finally {
+      activeJobs.delete(jobId)
+      jobSecrets.delete(jobId)
+    }
+  })()
+
+  activeJobs.set(jobId, run)
+  return run
+}
+
 async function recoverJobs() {
   for (const job of await listJobs()) {
     if (!job) {
@@ -755,6 +873,9 @@ app.post('/api/export-html', upload.single('file'), async (req, res) => {
       targetLanguage: payload?.targetLanguage || 'cs',
       sections: payload?.sections || [],
     })
+    if (payload?.sessionId) {
+      await writeSessionArtifact(payload.sessionId, 'original', result.html)
+    }
     setAttachmentHeaders(res, result.fileName, 'text/html; charset=utf-8')
     return res.send(result.html)
   } catch (error) {
@@ -771,9 +892,105 @@ app.post('/api/import-html', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Chybí přeložený HTML soubor.' })
     }
     const payload = parseBodyPayload(req)
+    if (!payload?.sessionId) {
+      return res.status(400).json({ error: 'Chybí sessionId pro HTML import.' })
+    }
+    const translatedHtml = normalizeImportedHtmlArtifacts(req.file.buffer.toString('utf-8'))
+    await writeSessionArtifact(payload.sessionId, 'translated', translatedHtml)
+    return res.json({
+      ok: true,
+      fileName: req.file.originalname || 'translated.html',
+      bytes: Buffer.byteLength(translatedHtml, 'utf8'),
+      reviewReady: true,
+    })
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      error: 'Nepodařilo se uložit přeložený HTML soubor.',
+      detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
+    })
+  }
+})
+
+app.post('/api/html-review', async (req, res) => {
+  try {
+    const payload = req.body || {}
+    if (!payload?.sessionId) {
+      return res.status(400).json({ error: 'Chybí sessionId pro kontrolu HTML.' })
+    }
+    if (!['claude', 'openai'].includes(payload?.provider)) {
+      return res.status(400).json({ error: 'Kontrola podporuje jen Claude nebo OpenAI.' })
+    }
+    const conflictingJob = await findConflictingActiveJob({
+      sessionId: payload.sessionId,
+      fileName: payload.fileName || '',
+    })
+    if (conflictingJob && conflictingJob.kind === 'translation') {
+      return res.status(409).json({
+        error: 'Nejprve nech doběhnout aktivní překlad, pak spusť LLM kontrolu.',
+        job: await publicJob(conflictingJob),
+      })
+    }
+    const jobId = randomUUID()
+    const { publicSettings, secretSettings } = splitJobSettings(payload?.settings || {})
+    const reviewJob = {
+      id: jobId,
+      kind: 'review',
+      sessionId: payload.sessionId,
+      fileName: payload.fileName || 'book.epub',
+      status: 'queued',
+      provider: payload.provider,
+      sourceLanguage: payload.sourceLanguage || 'en',
+      targetLanguage: payload.targetLanguage || 'cs',
+      sections: payload.sections || [],
+      settings: publicSettings,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      startedAt: '',
+      completedAt: '',
+      error: '',
+      outputFileName: '',
+      progress: {
+        stage: 'queued',
+        processedSections: 0,
+        totalSections: payload.sections?.filter((section) => section.includeInTranslation).length || 0,
+        changedSections: 0,
+        currentSectionId: '',
+        currentSectionTitle: '',
+        percent: 0,
+      },
+      summary: {},
+    }
+    jobSecrets.set(jobId, secretSettings)
+    await writeJob(reviewJob)
+    processReviewJob(jobId).catch((error) => {
+      console.error('[processReviewJob] unhandled error:', error?.message)
+    })
+    return res.status(202).json(await publicJob(reviewJob))
+  } catch (error) {
+    return res.status(500).json({
+      error: 'Nepodařilo se spustit LLM kontrolu HTML.',
+      detail: error instanceof Error ? error.message : 'Unknown error',
+    })
+  }
+})
+
+app.post('/api/package-html', async (req, res) => {
+  try {
+    const payload = req.body || {}
+    if (!payload?.sessionId) {
+      return res.status(400).json({ error: 'Chybí sessionId pro zabalení EPUB.' })
+    }
+    const sourceBuffer = await resolveSourceBuffer(payload, null)
+    const reviewedHtml =
+      (payload?.reviewProvider && await readSessionArtifact(payload.sessionId, `reviewed-${payload.reviewProvider}`)) ||
+      await readSessionArtifact(payload.sessionId, 'reviewed-latest') ||
+      await readSessionArtifact(payload.sessionId, 'translated')
+    if (!reviewedHtml.trim()) {
+      return res.status(400).json({ error: 'Chybí zkontrolované nebo nahrané HTML.' })
+    }
     const result = await importTranslatedHtmlToEpub({
-      buffer: await resolveSourceBuffer(payload, null),
-      translatedHtml: req.file.buffer.toString('utf-8'),
+      buffer: sourceBuffer,
+      translatedHtml: reviewedHtml,
       fileName: payload?.fileName || 'book.epub',
       targetLanguage: payload?.targetLanguage || 'cs',
       sections: payload?.sections || [],
@@ -782,7 +999,7 @@ app.post('/api/import-html', upload.single('file'), async (req, res) => {
     return res.send(result.buffer)
   } catch (error) {
     return res.status(error.statusCode || 500).json({
-      error: 'Nepodařilo se zabalit přeložený HTML zpět do EPUB.',
+      error: 'Nepodařilo se zabalit HTML zpět do EPUB.',
       detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
     })
   }

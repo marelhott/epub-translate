@@ -544,6 +544,10 @@ export default function App() {
   const [originalBookData, setOriginalBookData] = useState(null)
   const [translatedBookData, setTranslatedBookData] = useState(null)
   const [translatedBlob, setTranslatedBlob] = useState(null)
+  const [importedHtmlMeta, setImportedHtmlMeta] = useState(null)
+  const [reviewJob, setReviewJob] = useState(null)
+  const [reviewResults, setReviewResults] = useState({})
+  const [selectedReviewProvider, setSelectedReviewProvider] = useState('claude')
   const [settings, setSettings] = useState(() => loadStoredSettings())
   const [diagnostics, setDiagnostics] = useState({})
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
@@ -553,6 +557,7 @@ export default function App() {
   const idbSectionsRef = useRef(0)
   const previewAbortRef = useRef(null)
   const htmlImportInputRef = useRef(null)
+  const reviewPollingRef = useRef({ jobId: '', failures: 0 })
   const [filters, setFilters] = useState({ includeMain: true, includeFront: false, includeBack: false, includeUnknown: false })
 
   useEffect(() => {
@@ -665,6 +670,43 @@ export default function App() {
     return () => window.clearInterval(interval)
   }, [job])
 
+  useEffect(() => {
+    if (!reviewJob?.id || reviewJob.status === 'completed' || reviewJob.status === 'failed') {
+      reviewPollingRef.current = { jobId: '', failures: 0 }
+      return undefined
+    }
+    if (reviewPollingRef.current.jobId !== reviewJob.id) {
+      reviewPollingRef.current = { jobId: reviewJob.id, failures: 0 }
+    }
+
+    const interval = window.setInterval(async () => {
+      try {
+        const response = await fetch(apiUrl(`/api/jobs/${reviewJob.id}`))
+        if (!response.ok) { reviewPollingRef.current.failures += 1; return }
+        const payload = await parseJsonSafely(response)
+        if (!payload) { reviewPollingRef.current.failures += 1; return }
+        reviewPollingRef.current.failures = 0
+        setReviewJob(payload)
+        if (payload.status === 'completed') {
+          setReviewResults((current) => ({
+            ...current,
+            [payload.provider]: payload,
+          }))
+          setSelectedReviewProvider(payload.provider)
+          setStatusText(`LLM kontrola přes ${providerVersion(payload.provider)} je hotová.`)
+        }
+        if (payload.status === 'failed') {
+          setError(payload?.error || 'LLM kontrola selhala.')
+          setStatusText('LLM kontrola selhala.')
+        }
+      } catch {
+        reviewPollingRef.current.failures += 1
+      }
+    }, 1000)
+
+    return () => window.clearInterval(interval)
+  }, [reviewJob])
+
   const includedSections = useMemo(
     () => analysis?.sections?.filter((s) => s.includeInTranslation) || [],
     [analysis]
@@ -719,6 +761,11 @@ export default function App() {
     return Math.round(job.progress.processedWords / progressRuntimeMinutes)
   }, [job, progressRuntimeMinutes])
 
+  const reviewRuntimeMinutes = useMemo(() => {
+    if (!reviewJob?.startedAt) return 0
+    return Math.max(0.02, (Date.now() - new Date(reviewJob.startedAt).getTime()) / 60000)
+  }, [reviewJob])
+
   function updateSettings(section, field, value) {
     setSettings((cur) => ({ ...cur, [section]: { ...cur[section], [field]: value } }))
   }
@@ -759,11 +806,12 @@ export default function App() {
     const response = await fetch(apiUrl('/api/jobs'))
     const payload = await parseJsonSafely(response)
     if (!response.ok || !Array.isArray(payload)) return
-    setJobs(payload.slice(0, 12))
+    const translationJobs = payload.filter((item) => (item.kind || 'translation') !== 'review')
+    setJobs(translationJobs.slice(0, 12))
     // Auto-resume polling for an active job after page reload
     setJob((current) => {
       if (current?.id) return current
-      const active = payload.find((j) => j.status === 'processing' || j.status === 'queued')
+      const active = translationJobs.find((j) => j.status === 'processing' || j.status === 'queued')
       return active || current
     })
   }
@@ -773,6 +821,7 @@ export default function App() {
     if (!file) return
     setOriginalBookData(null); setTranslatedBookData(null); setTranslatedBlob(null)
     setPreview(null); setJob(null); setExportMeta(null); setError('')
+    setImportedHtmlMeta(null); setReviewJob(null); setReviewResults({})
     setResumableJob(null)
     setStatusText('Načítám knihu…')
     const formData = new FormData()
@@ -1010,7 +1059,7 @@ export default function App() {
     event.target.value = ''
     if (!file || !analysis?.sessionId || !originalBookData) return
     setError('')
-    setStatusText('Nahrávám přeložené HTML a balím EPUB…')
+    setStatusText('Nahrávám přeložené HTML pro budoucí LLM kontrolu…')
     try {
       const formData = new FormData()
       formData.append('payload', JSON.stringify({
@@ -1030,23 +1079,94 @@ export default function App() {
         const payload = await parseJsonSafely(response)
         throw new Error(payload?.detail || payload?.error || 'Import HTML selhal.')
       }
-      const blob = await response.blob()
-      const contentDisposition = response.headers.get('Content-Disposition') || ''
-      const match = contentDisposition.match(/filename="?([^"]+)"?/)
-      const fileName = match?.[1] || 'translated.from-html.epub'
-      const bookData = await blob.arrayBuffer()
-      setTranslatedBlob(blob)
-      setTranslatedBookData(bookData)
-      setExportMeta({ fileName, cacheHits: 0, cacheMisses: 0 })
-      setStatusText('HTML import hotový. EPUB je připraven ke stažení.')
+      const payload = await parseJsonSafely(response)
+      setImportedHtmlMeta(payload)
+      setTranslatedBlob(null)
+      setTranslatedBookData(null)
+      setExportMeta(null)
+      setReviewJob(null)
+      setReviewResults({})
+      setStatusText('HTML import hotový. Spusť LLM kontrolu přes Sonnet nebo GPT.')
     } catch (importError) {
       setError(importError.message)
       setStatusText('Import HTML selhal.')
     }
   }
 
+  async function startHtmlReview(provider) {
+    if (!analysis?.sessionId || !importedHtmlMeta) return
+    if (reviewJob?.status === 'processing' || reviewJob?.status === 'queued') {
+      setError('LLM kontrola už právě běží.')
+      return
+    }
+    setError('')
+    setSelectedReviewProvider(provider)
+    setStatusText(`Spouštím LLM kontrolu přes ${providerVersion(provider)}…`)
+    try {
+      const response = await fetch(apiUrl('/api/html-review'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: analysis.sessionId,
+          fileName: analysis.fileName,
+          provider,
+          sourceLanguage: analysis.metadata.language || 'en',
+          targetLanguage: 'cs',
+          sections: analysis.sections,
+          settings: sanitizeSettings(settings),
+        }),
+      })
+      const payload = await parseJsonSafely(response)
+      if (!response.ok) throw new Error(payload?.detail || payload?.error || 'LLM kontrola selhala.')
+      setReviewJob(payload)
+    } catch (reviewError) {
+      setError(reviewError.message)
+      setStatusText('LLM kontrolu se nepodařilo spustit.')
+    }
+  }
+
+  async function packageReviewedHtml() {
+    if (!analysis?.sessionId || !importedHtmlMeta) return
+    setError('')
+    setStatusText('Balím zkontrolované HTML zpět do EPUB…')
+    try {
+      const response = await fetch(apiUrl('/api/package-html'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: analysis.sessionId,
+          fileName: analysis.fileName,
+          targetLanguage: 'cs',
+          sections: analysis.sections,
+          reviewProvider: reviewResults[selectedReviewProvider] ? selectedReviewProvider : '',
+        }),
+      })
+      if (!response.ok) {
+        const payload = await parseJsonSafely(response)
+        throw new Error(payload?.detail || payload?.error || 'Zabalení EPUB selhalo.')
+      }
+      const blob = await response.blob()
+      const bookData = await blob.arrayBuffer()
+      const contentDisposition = response.headers.get('Content-Disposition') || ''
+      const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+      const asciiMatch = contentDisposition.match(/filename="?([^"]+)"?/i)
+      const fileName =
+        (utf8Match?.[1] ? decodeURIComponent(utf8Match[1]) : '') ||
+        asciiMatch?.[1] ||
+        'translated.from-html.epub'
+      setTranslatedBlob(blob)
+      setTranslatedBookData(bookData)
+      setExportMeta({ fileName, cacheHits: 0, cacheMisses: 0 })
+      setStatusText('EPUB je připraven ke stažení.')
+    } catch (packError) {
+      setError(packError.message)
+      setStatusText('Zabalení EPUB selhalo.')
+    }
+  }
+
   const rightMode = !originalBookData ? 'empty'
     : isPreviewLoading ? 'preview-progress'
+    : reviewJob && reviewJob.status !== 'completed' && reviewJob.status !== 'failed' ? 'review-progress'
     : job && job.status !== 'completed' && job.status !== 'failed' ? 'progress'
     : translatedBookData ? 'translated'
     : preview ? 'preview-result'
@@ -1062,7 +1182,7 @@ export default function App() {
     upload: !analysis,
     analyze: !!analysis && rightMode === 'original',
     preview: rightMode === 'preview-progress' || rightMode === 'preview-result',
-    export: rightMode === 'progress' || rightMode === 'translated',
+    export: rightMode === 'progress' || rightMode === 'review-progress' || rightMode === 'translated',
   }
 
   return (
@@ -1369,6 +1489,52 @@ export default function App() {
                 </div>
               )}
 
+              {rightMode === 'review-progress' && (
+                <div className="wb-progress wb-progress--review">
+                  <div className="wb-progress-head">
+                    <div>
+                      <div className="wb-progress-label">Probíhá LLM kontrola</div>
+                      <div className="wb-progress-title">
+                        {reviewJob?.provider === 'claude' ? 'Claude Sonnet 4.6' : 'OpenAI GPT-5.4'}
+                      </div>
+                    </div>
+                    <div className="wb-progress-clock">
+                      <span className="wb-progress-pct">{Number(reviewJob?.progress?.percent || 0).toFixed(1)}%</span>
+                      <span className="wb-progress-time">{reviewRuntimeMinutes.toFixed(1)}m</span>
+                    </div>
+                  </div>
+                  <div className="wb-progress-track">
+                    <div
+                      className="wb-progress-fill"
+                      style={{ width: `${Math.min(100, Number(reviewJob?.progress?.percent || 0))}%` }}
+                    />
+                  </div>
+                  <div className="wb-progress-grid">
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val is-accent">kontrola překladu</span>
+                      <span className="wb-progress-cell-lbl">režim</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{reviewJob?.progress?.processedSections || 0}/{reviewJob?.progress?.totalSections || 0}</span>
+                      <span className="wb-progress-cell-lbl">sekcí</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{reviewJob?.progress?.changedSections || 0}</span>
+                      <span className="wb-progress-cell-lbl">upravených sekcí</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{reviewRuntimeMinutes.toFixed(1)}m</span>
+                      <span className="wb-progress-cell-lbl">běží</span>
+                    </div>
+                  </div>
+                  <div className="wb-progress-current">
+                    {reviewJob?.progress?.currentSectionTitle
+                      ? `→ ${reviewJob.progress.currentSectionTitle}`
+                      : 'Kontroluju další sekci…'}
+                  </div>
+                </div>
+              )}
+
             </div>
           </div>
 
@@ -1416,41 +1582,101 @@ export default function App() {
                   </button>
                 </div>
               ) : null}
-              <button
-                className="wb-btn wb-btn--preview"
-                disabled={!includedSections.length || isPreviewLoading}
-                onClick={runPreviewTranslation}
-              >
-                {isPreviewLoading ? 'Překládám ukázku…' : 'Preview 2 strany'}
-              </button>
-              <button
-                className="wb-btn wb-btn--translate"
-                disabled={!includedSections.length}
-                onClick={startTranslation}
-              >
-                Spustit překlad
-              </button>
-              <button
-                className="wb-btn wb-btn--preview"
-                disabled={!includedSections.length || !originalBookData}
-                onClick={downloadExternalHtml}
-              >
-                Stáhnout HTML
-              </button>
-              <button
-                className="wb-btn wb-btn--translate"
-                disabled={!analysis?.sessionId || !originalBookData}
-                onClick={() => htmlImportInputRef.current?.click()}
-              >
-                Nahrát HTML
-              </button>
-              <button
-                className="wb-btn wb-btn--download"
-                disabled={!translatedBlob}
-                onClick={downloadTranslatedBook}
-              >
-                Stáhnout EPUB
-              </button>
+              <div className="wb-action-group">
+                <div className="wb-action-group-head">HTML roundtrip</div>
+                <button
+                  className="wb-btn wb-btn--html"
+                  disabled={!includedSections.length || !originalBookData}
+                  onClick={downloadExternalHtml}
+                >
+                  Stáhnout HTML pro DeepL
+                </button>
+                <button
+                  className="wb-btn wb-btn--html-import"
+                  disabled={!analysis?.sessionId || !originalBookData}
+                  onClick={() => htmlImportInputRef.current?.click()}
+                >
+                  Nahrát přeložené HTML
+                </button>
+                {importedHtmlMeta ? (
+                  <div className="wb-action-note">
+                    HTML nahrané. {Math.round((importedHtmlMeta.bytes || 0) / 1024)} kB připraveno ke kontrole.
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="wb-action-group wb-action-group--review">
+                <div className="wb-action-group-head">LLM kontrola překladu</div>
+                <button
+                  className="wb-btn wb-btn--review-claude"
+                  disabled={!importedHtmlMeta || reviewJob?.status === 'processing'}
+                  onClick={() => startHtmlReview('claude')}
+                >
+                  Kontrola Sonnet 4.6
+                </button>
+                <button
+                  className="wb-btn wb-btn--review-openai"
+                  disabled={!importedHtmlMeta || reviewJob?.status === 'processing'}
+                  onClick={() => startHtmlReview('openai')}
+                >
+                  Kontrola GPT-5.4
+                </button>
+                {Object.keys(reviewResults).length ? (
+                  <div className="wb-review-results">
+                    {Object.values(reviewResults).map((item) => (
+                      <button
+                        key={item.provider}
+                        className={`wb-review-chip ${selectedReviewProvider === item.provider ? 'is-active' : ''}`}
+                        onClick={() => setSelectedReviewProvider(item.provider)}
+                      >
+                        {providerVersion(item.provider)} · {item.summary?.changedSections || 0} úprav
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="wb-action-note">Kontrola porovnává originální anglický HTML a český import po sekcích.</div>
+                )}
+              </div>
+
+              <div className="wb-action-divider" />
+
+              <div className="wb-action-group">
+                <div className="wb-action-group-head">Překlad uvnitř appky</div>
+                <button
+                  className="wb-btn wb-btn--preview"
+                  disabled={!includedSections.length || isPreviewLoading}
+                  onClick={runPreviewTranslation}
+                >
+                  {isPreviewLoading ? 'Překládám ukázku…' : 'Preview 2 strany'}
+                </button>
+                <button
+                  className="wb-btn wb-btn--translate"
+                  disabled={!includedSections.length}
+                  onClick={startTranslation}
+                >
+                  Spustit plný překlad
+                </button>
+              </div>
+
+              <div className="wb-action-divider" />
+
+              <div className="wb-action-group wb-action-group--final">
+                <div className="wb-action-group-head">Finální EPUB</div>
+                <button
+                  className="wb-btn wb-btn--package"
+                  disabled={!importedHtmlMeta || !Object.keys(reviewResults).length}
+                  onClick={packageReviewedHtml}
+                >
+                  Zabalit zpět do EPUB
+                </button>
+                <button
+                  className="wb-btn wb-btn--download"
+                  disabled={!translatedBlob}
+                  onClick={downloadTranslatedBook}
+                >
+                  Stáhnout EPUB
+                </button>
+              </div>
             </div>
 
             {jobs.length ? (

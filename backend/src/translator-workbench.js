@@ -339,6 +339,72 @@ function injectBodyInnerHtml(originalHtml, bodyInnerHtml) {
   return bodyInnerHtml
 }
 
+export function normalizeImportedHtmlArtifacts(html) {
+  return String(html || '')
+    .replace(/\b([A-Za-z][\w-]*)_x003a_/g, '$1:')
+    .replace(/\s+xmlns_x003a_/g, ' xmlns:')
+}
+
+function extractHtmlSectionsDocument(html) {
+  const doc = cheerio.load(String(html || ''), { decodeEntities: false })
+  const sectionMap = new Map()
+  doc('[data-ebook-id]').each((_index, element) => {
+    const node = doc(element)
+    const id = node.attr('data-ebook-id') || ''
+    if (!id) return
+    sectionMap.set(id, {
+      id,
+      title: normalizeText(node.find('.ebook-section-title').first().text()),
+      bodyHtml: node.find('.ebook-section-body').first().html() || '',
+    })
+  })
+  return { doc, sectionMap }
+}
+
+function extractReviewedHtmlFragment(raw, fallbackHtml) {
+  const text = String(raw || '').trim()
+  if (!text) return String(fallbackHtml || '')
+  const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i)
+  const candidate = fenced?.[1]?.trim() || text
+  if (!candidate) return String(fallbackHtml || '')
+  return candidate
+}
+
+async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtml, title, settings }) {
+  const reviewer =
+    provider === 'claude'
+      ? translateWithClaude
+      : provider === 'openai'
+        ? translateWithOpenAI
+        : null
+
+  if (!reviewer) {
+    throw new Error(`Provider ${provider} nepodporuje LLM kontrolu HTML.`)
+  }
+
+  const systemPrompt =
+    'You are a conservative Czech copy editor reviewing an existing Czech translation of a non-fiction book HTML fragment against the original English HTML fragment. ' +
+    'Your job is NOT to retranslate the fragment from scratch. Keep the Czech translation as-is unless a change is clearly needed. ' +
+    'Only make minimal, local edits that improve factual fidelity, gender agreement, terminology consistency, obvious omissions, or clearly unnatural Czech phrasing. ' +
+    'Preserve the exact HTML tags, nesting, links, ids, footnotes, and attributes. Preserve paragraph boundaries and inline markup. ' +
+    'Do not rewrite for style unless the current Czech is clearly wrong or awkward. Do not add commentary, markdown, wrappers, or explanations. ' +
+    'Return ONLY the corrected Czech HTML fragment body.'
+
+  const response = await reviewer({
+    text:
+      `Section title: ${title || 'Untitled'}\n\n` +
+      `<original_html>\n${originalHtml}\n</original_html>\n\n` +
+      `<translated_html>\n${translatedHtml}\n</translated_html>`,
+    sourceLanguage: 'en',
+    targetLanguage: 'cs',
+    format: 'text',
+    settings,
+    systemPrompt,
+  })
+
+  return extractReviewedHtmlFragment(response, translatedHtml)
+}
+
 function extractBodyText(html) {
   const $ = cheerio.load(html, { xmlMode: true })
 
@@ -1560,14 +1626,15 @@ export async function importTranslatedHtmlToEpub(payload) {
   if (!buffer) {
     throw new Error('Chybí zdrojový EPUB buffer.')
   }
-  if (!translatedHtml.trim()) {
+  const normalizedTranslatedHtml = normalizeImportedHtmlArtifacts(translatedHtml)
+  if (!normalizedTranslatedHtml.trim()) {
     throw new Error('Chybí přeložený HTML obsah.')
   }
 
   const zip = await JSZip.loadAsync(buffer)
   const packagePath = await readContainer(zip)
   const pkg = await readPackage(zip, packagePath)
-  const translatedDoc = cheerio.load(translatedHtml)
+  const translatedDoc = cheerio.load(normalizedTranslatedHtml)
 
   const sectionNodes = translatedDoc('[data-ebook-id]')
   const generatorMeta = translatedDoc('meta[name="generator"]').attr('content') || ''
@@ -1636,6 +1703,89 @@ export async function importTranslatedHtmlToEpub(payload) {
     stats: {
       importedSections: importedCount,
       availableSections: translatedSections.size,
+    },
+  }
+}
+
+export async function reviewTranslatedHtml(payload) {
+  const {
+    originalHtml = '',
+    translatedHtml = '',
+    provider = 'claude',
+    settings = {},
+    onProgress,
+  } = payload || {}
+
+  const normalizedOriginalHtml = String(originalHtml || '')
+  const normalizedTranslatedHtml = normalizeImportedHtmlArtifacts(translatedHtml)
+  if (!normalizedOriginalHtml.trim()) {
+    throw new Error('Chybí původní HTML export pro kontrolu.')
+  }
+  if (!normalizedTranslatedHtml.trim()) {
+    throw new Error('Chybí přeložené HTML pro kontrolu.')
+  }
+  if (!['claude', 'openai'].includes(provider)) {
+    throw new Error('Kontrola HTML podporuje jen Claude Sonnet 4.6 a OpenAI GPT-5.4.')
+  }
+
+  const { doc: originalDoc, sectionMap: originalSections } = extractHtmlSectionsDocument(normalizedOriginalHtml)
+  const { doc: reviewedDoc, sectionMap: translatedSections } = extractHtmlSectionsDocument(normalizedTranslatedHtml)
+  if (!originalSections.size || !translatedSections.size) {
+    throw new Error('Originální nebo přeložené HTML neobsahuje sekce pro kontrolu.')
+  }
+
+  const targetIds = [...originalSections.keys()].filter((id) => translatedSections.has(id))
+  let processedSections = 0
+  let changedSections = 0
+
+  for (const sectionId of targetIds) {
+    const sourceSection = originalSections.get(sectionId)
+    const translatedSection = translatedSections.get(sectionId)
+    if (!sourceSection?.bodyHtml?.trim() || !translatedSection?.bodyHtml?.trim()) {
+      processedSections += 1
+      continue
+    }
+
+    const reviewedHtml = await reviewHtmlFragmentWithLlm({
+      provider,
+      originalHtml: sourceSection.bodyHtml,
+      translatedHtml: translatedSection.bodyHtml,
+      title: translatedSection.title || sourceSection.title || sectionId,
+      settings,
+    })
+
+    const normalizedReviewed = normalizeImportedHtmlArtifacts(reviewedHtml).trim()
+    if (normalizedReviewed && normalizedReviewed !== translatedSection.bodyHtml.trim()) {
+      changedSections += 1
+      const sectionNode = reviewedDoc(`[data-ebook-id="${sectionId}"]`).first()
+      sectionNode.find('.ebook-section-body').first().html(normalizedReviewed)
+    }
+
+    processedSections += 1
+    if (onProgress) {
+      await onProgress({
+        stage: 'reviewing-html',
+        processedSections,
+        totalSections: targetIds.length,
+        currentSectionId: sectionId,
+        currentSectionTitle: translatedSection.title || sourceSection.title || sectionId,
+        changedSections,
+        percent: targetIds.length ? Number(((processedSections / targetIds.length) * 100).toFixed(2)) : 100,
+      })
+    }
+  }
+
+  const title = normalizeText(originalDoc('.ebook-title').first().text())
+  const author = normalizeText(originalDoc('.ebook-author').first().text())
+
+  return {
+    html: reviewedDoc.html(),
+    stats: {
+      totalSections: targetIds.length,
+      processedSections,
+      changedSections,
+      title,
+      author,
     },
   }
 }

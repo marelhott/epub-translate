@@ -1119,9 +1119,57 @@
   border-bottom: 1px solid var(--border-soft);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   flex-shrink: 0;
   background: transparent;
+}
+
+.wb-action-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wb-action-group-head {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.wb-action-divider {
+  height: 1px;
+  background: var(--border-soft);
+}
+
+.wb-action-note {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.5;
+  padding: 0 2px;
+}
+
+.wb-review-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wb-review-chip {
+  border: 1px solid rgba(0,0,0,0.08);
+  background: rgba(255,255,255,0.85);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wb-review-chip.is-active {
+  border-color: rgba(37, 99, 235, 0.26);
+  color: #1f46a1;
+  background: rgba(37, 99, 235, 0.1);
 }
 
 /* Buttons */
@@ -1195,6 +1243,56 @@
   background: rgba(37, 99, 235, 0.2);
   border-color: rgba(37, 99, 235, 0.3);
   color: #1f46a1;
+}
+
+.wb-btn--html {
+  border-radius: 12px;
+  height: 42px;
+  justify-content: center;
+  background: rgba(18, 135, 114, 0.12);
+  border-color: rgba(18, 135, 114, 0.24);
+  color: #146e5c;
+  font-weight: 650;
+}
+
+.wb-btn--html-import {
+  border-radius: 12px;
+  height: 42px;
+  justify-content: center;
+  background: rgba(18, 135, 114, 0.06);
+  border-color: rgba(18, 135, 114, 0.18);
+  color: #146e5c;
+  font-weight: 600;
+}
+
+.wb-btn--review-claude,
+.wb-btn--review-openai {
+  border-radius: 12px;
+  height: 44px;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.wb-btn--review-claude {
+  background: rgba(114, 74, 222, 0.12);
+  border-color: rgba(114, 74, 222, 0.22);
+  color: #5b3cb5;
+}
+
+.wb-btn--review-openai {
+  background: rgba(16, 92, 168, 0.1);
+  border-color: rgba(16, 92, 168, 0.2);
+  color: #195998;
+}
+
+.wb-btn--package {
+  border-radius: 12px;
+  height: 42px;
+  justify-content: center;
+  background: rgba(111, 66, 193, 0.12);
+  border-color: rgba(111, 66, 193, 0.22);
+  color: #6f42c1;
+  font-weight: 650;
 }
 
 .wb-btn--download {
