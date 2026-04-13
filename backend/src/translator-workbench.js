@@ -1569,14 +1569,27 @@ export async function importTranslatedHtmlToEpub(payload) {
   const pkg = await readPackage(zip, packagePath)
   const translatedDoc = cheerio.load(translatedHtml)
 
+  const sectionNodes = translatedDoc('[data-ebook-id]')
+  const generatorMeta = translatedDoc('meta[name="generator"]').attr('content') || ''
+  if (!sectionNodes.length) {
+    if (/pdf2htmlex/i.test(generatorMeta) || /pdf2htmlex/i.test(translatedHtml)) {
+      throw new Error('Nahraný HTML soubor vypadá jako export z PDF, ne jako HTML export z EPUB Translatoru.')
+    }
+    throw new Error('Nahraný HTML soubor není ve formátu EPUB Translator exportu.')
+  }
+
   const translatedSections = new Map()
-  translatedDoc('[data-ebook-id]').each((_index, element) => {
+  sectionNodes.each((_index, element) => {
     const id = translatedDoc(element).attr('data-ebook-id') || ''
     const bodyHtml = translatedDoc(element).find('.ebook-section-body').first().html() || ''
     if (id && bodyHtml.trim()) {
       translatedSections.set(id, bodyHtml.trim())
     }
   })
+
+  if (!translatedSections.size) {
+    throw new Error('HTML export neobsahuje žádné přeložitelné sekce s tělem.')
+  }
 
   let importedCount = 0
   for (const section of sections.filter((item) => item.includeInTranslation)) {
