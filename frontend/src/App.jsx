@@ -2,6 +2,75 @@ import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { ReaderPane } from './components/ReaderPane'
 import './app.css'
 
+// ── IndexedDB: browser-side checkpoint persistence (survives Vercel redeploys) ──
+const IDB_NAME = 'epub-translator'
+const IDB_VERSION = 1
+const IDB_STORE = 'checkpoints'
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION)
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+        req.result.createObjectStore(IDB_STORE, { keyPath: 'jobId' })
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+async function idbSaveCheckpoint(jobId, fileName, provider, totalSections, checkpoint) {
+  const db = await idbOpen()
+  const sectionCount = Object.keys(checkpoint?.sections || {}).length
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).put({
+      jobId, fileName, provider, totalSections, sectionCount,
+      updatedAt: checkpoint?.updatedAt || new Date().toISOString(),
+      sections: checkpoint?.sections || {},
+    })
+    tx.oncomplete = () => { db.close(); resolve() }
+    tx.onerror = () => { db.close(); reject(tx.error) }
+  })
+}
+
+async function idbLoadCheckpoint(jobId) {
+  const db = await idbOpen()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly')
+    const req = tx.objectStore(IDB_STORE).get(jobId)
+    req.onsuccess = () => { db.close(); resolve(req.result || null) }
+    req.onerror = () => { db.close(); reject(req.error) }
+  })
+}
+
+async function idbFindByFileName(fileName) {
+  const db = await idbOpen()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly')
+    const req = tx.objectStore(IDB_STORE).getAll()
+    req.onsuccess = () => {
+      db.close()
+      const matches = (req.result || [])
+        .filter((cp) => cp.fileName === fileName && cp.sectionCount > 0)
+        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      resolve(matches[0] || null)
+    }
+    req.onerror = () => { db.close(); reject(req.error) }
+  })
+}
+
+async function idbDeleteCheckpoint(jobId) {
+  const db = await idbOpen()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).delete(jobId)
+    tx.oncomplete = () => { db.close(); resolve() }
+    tx.onerror = () => { db.close(); reject(tx.error) }
+  })
+}
+
 const SETTINGS_STORAGE_KEY = 'ebook-translator-settings-v1'
 
 const DEFAULT_SETTINGS = {
@@ -472,6 +541,7 @@ export default function App() {
   const [settingsSavedAt, setSettingsSavedAt] = useState('')
   const [settingsSaveError, setSettingsSaveError] = useState('')
   const pollingRef = useRef({ jobId: '', startedAt: 0, failures: 0 })
+  const idbSectionsRef = useRef(0)
   const previewAbortRef = useRef(null)
   const [filters, setFilters] = useState({ includeMain: true, includeFront: false, includeBack: false, includeUnknown: false })
 
@@ -541,9 +611,29 @@ export default function App() {
         pollingRef.current.failures = 0
         setJob(payload)
         setJobs((current) => [payload, ...current.filter((item) => item.id !== payload.id)].slice(0, 12))
+
+        // Save checkpoint to IndexedDB as new sections complete
+        const serverSections = payload.checkpoint?.completedSections || 0
+        if (serverSections > 0 && serverSections > idbSectionsRef.current) {
+          idbSectionsRef.current = serverSections
+          fetch(apiUrl(`/api/jobs/${payload.id}/checkpoint`))
+            .then((r) => r.ok ? r.json() : null)
+            .then((cp) => {
+              if (cp?.sections) {
+                idbSaveCheckpoint(
+                  payload.id, payload.fileName, payload.provider,
+                  payload.summary?.translatedSections || payload.plan?.translatedSections || 0,
+                  cp
+                ).catch(() => {})
+              }
+            })
+            .catch(() => {})
+        }
+
         if (payload.status === 'completed') {
           setStatusText('Překlad hotový.')
           setExportMeta({ fileName: payload.outputFileName, cacheHits: payload.progress?.cacheHits || 0, cacheMisses: payload.progress?.cacheMisses || 0 })
+          idbDeleteCheckpoint(payload.id).catch(() => {})
           const downloadResponse = await fetch(apiUrl(`/api/jobs/${payload.id}/download`))
           if (!downloadResponse.ok) throw new Error('Nepodařilo se stáhnout výsledný EPUB.')
           const blob = await downloadResponse.blob()
@@ -687,15 +777,14 @@ export default function App() {
       setOriginalBookData(fileBuffer)
       setAnalysis(payload)
       setSelectedProvider('deepl')
-      // Check for a resumable job matching this file
-      const matchingJob = jobs.find((j) =>
-        j.status !== 'completed' &&
-        j.fileName === file.name &&
-        (j.progress?.percent || 0) > 0
-      )
-      if (matchingJob) {
-        setResumableJob(matchingJob)
-        setStatusText(`Nalezen přerušený překlad (${Math.round(matchingJob.progress?.percent || 0)}%). Můžeš pokračovat nebo začít znovu.`)
+      // Check IndexedDB for a saved checkpoint matching this file
+      const idbMatch = await idbFindByFileName(file.name).catch(() => null)
+      if (idbMatch && idbMatch.sectionCount > 0) {
+        const pct = idbMatch.totalSections
+          ? Math.round((idbMatch.sectionCount / idbMatch.totalSections) * 100)
+          : idbMatch.sectionCount
+        setResumableJob({ ...idbMatch, _fromIdb: true })
+        setStatusText(`Nalezen přerušený překlad v prohlížeči – ${idbMatch.sectionCount} sekcí (${pct}%). Můžeš pokračovat nebo začít znovu.`)
       } else {
         setStatusText('Kniha připravena. Ověř preview, pak spusť překlad.')
       }
@@ -755,6 +844,7 @@ export default function App() {
   async function startTranslation() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
     setError(''); setExportMeta(null)
+    idbSectionsRef.current = 0
     setStatusText('Překlad probíhá…')
     try {
       const requestPayload = {
@@ -778,6 +868,38 @@ export default function App() {
     } catch (jobError) {
       setError(jobError.message)
       setStatusText('Nepodařilo se spustit překlad.')
+    }
+  }
+
+  async function startTranslationWithCheckpoint(idbEntry) {
+    if (!analysis?.sessionId || !includedSections.length || !originalBookData || !idbEntry?.sections) return
+    setError(''); setExportMeta(null)
+    idbSectionsRef.current = 0
+    setStatusText(`Obnovuji překlad z ${idbEntry.sectionCount} uložených sekcí…`)
+    try {
+      const requestPayload = {
+        sessionId: analysis.sessionId,
+        fileName: analysis.fileName,
+        provider: idbEntry.provider || selectedProvider,
+        sourceLanguage: analysis.metadata.language || 'en',
+        targetLanguage: 'cs',
+        sections: analysis.sections,
+        analysisSummary: analysis.summary,
+        settings: sanitizeSettings(settings),
+        clientCheckpoint: { sections: idbEntry.sections, updatedAt: idbEntry.updatedAt },
+      }
+      setSelectedProvider(requestPayload.provider)
+      const response = await fetch(apiUrl('/api/jobs'), {
+        method: 'POST',
+        body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
+      })
+      const payload = await parseJsonSafely(response)
+      if (!response.ok) throw new Error(payload?.detail || payload?.error || 'Export failed')
+      setJob(payload)
+      setJobs((current) => [payload, ...current.filter((item) => item.id !== payload.id)].slice(0, 12))
+    } catch (jobError) {
+      setError(jobError.message)
+      setStatusText('Nepodařilo se obnovit překlad.')
     }
   }
 
@@ -1151,18 +1273,34 @@ export default function App() {
               {resumableJob && originalBookData ? (
                 <div className="wb-resume-banner">
                   <div className="wb-resume-banner-text">
-                    Nalezen přerušený překlad – <strong>{Math.round(resumableJob.progress?.percent || 0)}%</strong> hotovo
-                    ({providerVersion(resumableJob.provider)})
+                    Nalezen přerušený překlad –{' '}
+                    <strong>
+                      {resumableJob._fromIdb
+                        ? `${resumableJob.sectionCount} sekcí`
+                        : `${Math.round(resumableJob.progress?.percent || 0)}%`}
+                    </strong>{' '}hotovo
+                    {resumableJob.provider ? ` (${providerVersion(resumableJob.provider)})` : ''}
                   </div>
                   <button
                     className="wb-btn wb-btn--translate"
-                    onClick={() => { setResumableJob(null); resumeTranslation(resumableJob) }}
+                    onClick={() => {
+                      const rj = resumableJob
+                      setResumableJob(null)
+                      if (rj._fromIdb) {
+                        startTranslationWithCheckpoint(rj)
+                      } else {
+                        resumeTranslation(rj)
+                      }
+                    }}
                   >
                     Pokračovat v překladu
                   </button>
                   <button
                     className="wb-btn wb-btn--secondary"
-                    onClick={() => setResumableJob(null)}
+                    onClick={() => {
+                      if (resumableJob._fromIdb) idbDeleteCheckpoint(resumableJob.jobId).catch(() => {})
+                      setResumableJob(null)
+                    }}
                   >
                     Začít znovu
                   </button>

@@ -21,7 +21,7 @@ dotenv.config({ path: '.env.local' })
 dotenv.config()
 
 const app = express()
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } })
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024, fieldSize: 10 * 1024 * 1024 } })
 const activeJobs = new Map()
 const jobSecrets = new Map()
 const JOB_TTL_MS = 1000 * 60 * 60 * 24
@@ -723,6 +723,12 @@ app.get('/api/jobs/:id', async (req, res) => {
   return res.json(await publicJob(job))
 })
 
+app.get('/api/jobs/:id/checkpoint', async (req, res) => {
+  const checkpoint = await readCheckpoint(req.params.id)
+  if (!checkpoint) return res.status(404).json({ error: 'Checkpoint nenalezen.' })
+  return res.json(checkpoint)
+})
+
 app.get('/api/jobs/:id/download', async (req, res) => {
   const job = await readJob(req.params.id)
   const output = job?.status === 'completed' ? await readOutput(job) : null
@@ -762,6 +768,19 @@ app.post('/api/jobs/:id/resume', upload.single('file'), async (req, res) => {
         ...(job.progress || {}),
         stage: (await readCheckpoint(job.id)) ? 'resuming-export' : 'queued',
       },
+    }
+
+    // Merge client-side checkpoint (from IndexedDB) with server-side
+    const clientCheckpoint = payload?.clientCheckpoint
+    if (clientCheckpoint?.sections && Object.keys(clientCheckpoint.sections).length) {
+      const existing = (await readCheckpoint(job.id)) || { jobId: job.id, updatedAt: '', sections: {} }
+      const merged = {
+        ...existing,
+        updatedAt: nowIso(),
+        sections: { ...clientCheckpoint.sections, ...(existing.sections || {}) },
+      }
+      await writeCheckpoint(job.id, merged)
+      resumed.progress = { ...(resumed.progress || {}), stage: 'resuming-export' }
     }
 
     await writeJob(resumed)
@@ -836,6 +855,17 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
 
     await writeSessionSource(sessionId, sourceBuffer)
     await writeJob(job)
+
+    // Accept client-side checkpoint (from IndexedDB) for cross-deploy resume
+    const clientCheckpoint = payload?.clientCheckpoint
+    if (clientCheckpoint?.sections && Object.keys(clientCheckpoint.sections).length) {
+      await writeCheckpoint(job.id, {
+        jobId: job.id,
+        updatedAt: clientCheckpoint.updatedAt || nowIso(),
+        sections: clientCheckpoint.sections,
+      })
+    }
+
     jobSecrets.set(job.id, secretSettings)
     processJob(job.id, { sourceBuffer }).catch((err) => console.error(`[processJob] unhandled:`, err?.message))
 
