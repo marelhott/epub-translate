@@ -578,13 +578,20 @@ async function processJob(jobId, options = {}) {
       }
       await writeJob(completed)
     } catch (error) {
-      const failed = {
-        ...(await readJob(jobId)),
-        status: 'failed',
-        updatedAt: nowIso(),
-        error: error instanceof Error ? error.message : 'Unknown error',
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      console.error(`[processJob] job ${jobId} failed:`, errorMessage, error?.stack || '')
+      try {
+        const current = await readJob(jobId)
+        const failed = {
+          ...(current || { id: jobId }),
+          status: 'failed',
+          updatedAt: nowIso(),
+          error: errorMessage,
+        }
+        await writeJob(failed)
+      } catch (writeError) {
+        console.error(`[processJob] failed to write error state for job ${jobId}:`, writeError?.message)
       }
-      await writeJob(failed)
     } finally {
       activeJobs.delete(jobId)
       jobSecrets.delete(jobId)
@@ -607,17 +614,19 @@ async function recoverJobs() {
     }
 
     if (job.status === 'queued' || job.status === 'processing') {
-      const requeued = {
+      // After server restart we have no API keys in memory.
+      // Mark the job as failed so the user can resume manually (which re-sends keys).
+      const interrupted = {
         ...job,
-        status: 'queued',
+        status: 'failed',
         updatedAt: nowIso(),
+        error: 'Server byl restartován – klikni „Pokračovat" pro obnovení překladu.',
         progress: {
           ...(job.progress || {}),
-          stage: 'queued',
+          stage: 'interrupted',
         },
       }
-      await writeJob(requeued)
-      processJob(job.id)
+      await writeJob(interrupted)
     }
   }
 }
@@ -757,7 +766,7 @@ app.post('/api/jobs/:id/resume', upload.single('file'), async (req, res) => {
 
     await writeJob(resumed)
     jobSecrets.set(job.id, secretSettings)
-    processJob(job.id, { sourceBuffer })
+    processJob(job.id, { sourceBuffer }).catch((err) => console.error(`[processJob] unhandled:`, err?.message))
 
     return res.status(202).json(await publicJob(resumed))
   } catch (error) {
@@ -828,7 +837,7 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
     await writeSessionSource(sessionId, sourceBuffer)
     await writeJob(job)
     jobSecrets.set(job.id, secretSettings)
-    processJob(job.id, { sourceBuffer })
+    processJob(job.id, { sourceBuffer }).catch((err) => console.error(`[processJob] unhandled:`, err?.message))
 
     return res.status(202).json(await publicJob(job))
   } catch (error) {

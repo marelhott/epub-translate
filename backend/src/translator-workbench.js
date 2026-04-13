@@ -1003,7 +1003,7 @@ async function translateTexts(provider, texts, options) {
   return { translations, cacheHits, cacheMisses: misses.length }
 }
 
-function chunkTranslationMisses(misses, { maxItems = 16, maxChars = 12000 } = {}) {
+function chunkTranslationMisses(misses, { maxItems = 40, maxChars = 30000 } = {}) {
   const chunks = []
   let current = []
   let currentChars = 0
@@ -1063,39 +1063,46 @@ function extractJsonTranslationArray(raw) {
 
 async function translateManyWithLlm(provider, misses, options) {
   const chunks = chunkTranslationMisses(misses)
-  const outputs = []
+  const LLM_CONCURRENCY = 8
+  const outputs = new Array(chunks.length)
 
-  for (const chunk of chunks) {
-    const payload = chunk.map((item, index) => ({
-      index,
-      format: item.format || 'text',
-      text: item.source,
-    }))
+  for (let start = 0; start < chunks.length; start += LLM_CONCURRENCY) {
+    const batch = chunks.slice(start, start + LLM_CONCURRENCY)
+    const results = await Promise.all(
+      batch.map(async (chunk) => {
+        const payload = chunk.map((item, index) => ({
+          index,
+          format: item.format || 'text',
+          text: item.source,
+        }))
 
-    const raw = await withRetry(
-      () =>
-        translators[provider]({
-          text:
-            `Translate this JSON array from ${options.sourceLanguage || 'auto'} to ${options.targetLanguage || 'cs'}.\n` +
-            'Return ONLY a valid JSON array of strings with the exact same length and order.\n' +
-            'Each item may be an HTML fragment. Preserve all tags and attributes inside each fragment and translate only visible text.\n\n' +
-            JSON.stringify(payload),
-          sourceLanguage: options.sourceLanguage,
-          targetLanguage: options.targetLanguage,
-          format: 'text',
-          settings: options.settings,
-        }),
-      { retries: 2, initialDelayMs: 800, label: `${provider} batch translation` }
+        const raw = await withRetry(
+          () =>
+            translators[provider]({
+              text:
+                `Translate this JSON array from ${options.sourceLanguage || 'auto'} to ${options.targetLanguage || 'cs'}.\n` +
+                'Return ONLY a valid JSON array of strings with the exact same length and order.\n' +
+                'Each item may be an HTML fragment. Preserve all tags and attributes inside each fragment and translate only visible text.\n\n' +
+                JSON.stringify(payload),
+              sourceLanguage: options.sourceLanguage,
+              targetLanguage: options.targetLanguage,
+              format: 'text',
+              settings: options.settings,
+            }),
+          { retries: 2, initialDelayMs: 800, label: `${provider} batch translation` }
+        )
+
+        const parsed = extractJsonTranslationArray(raw)
+        if (!parsed || parsed.length !== chunk.length) {
+          throw new Error(`Batched ${provider} translation returned invalid JSON length.`)
+        }
+        return parsed
+      })
     )
-
-    const parsed = extractJsonTranslationArray(raw)
-    if (!parsed || parsed.length !== chunk.length) {
-      throw new Error(`Batched ${provider} translation returned invalid JSON length.`)
-    }
-    outputs.push(...parsed)
+    results.forEach((parsed, i) => { outputs[start + i] = parsed })
   }
 
-  return outputs
+  return outputs.flat()
 }
 
 export async function buildExportPlan(payload) {
@@ -2250,37 +2257,49 @@ export async function exportTranslatedEpub(payload) {
     })
   }
 
-  for (const task of resumableTasks) {
-    const { section, trimmedHtml, texts } = task
-    const translationBatch = await withRetry(
-      () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
-      { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
-    )
-    cacheHits += translationBatch.cacheHits
-    cacheMisses += translationBatch.cacheMisses
-    processedBlocks += texts.length
-    processedWords += section.wordCount || section.stats?.wordCount || 0
-    const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
-    zip.file(section.href, nextHtml)
-
-    if (onCheckpoint) {
-      await onCheckpoint({
-        updatedAt: new Date().toISOString(),
-        sectionId: section.id,
-        section: {
-          id: section.id,
-          href: section.href,
-          title: section.title,
-          translatedHtml: nextHtml,
-          processedBlocks: texts.length,
-          processedWords: section.wordCount || section.stats?.wordCount || 0,
-          cacheHits: translationBatch.cacheHits,
-          cacheMisses: translationBatch.cacheMisses,
-        },
+  const SECTION_CONCURRENCY = 6
+  for (let start = 0; start < resumableTasks.length; start += SECTION_CONCURRENCY) {
+    const batch = resumableTasks.slice(start, start + SECTION_CONCURRENCY)
+    const results = await Promise.all(
+      batch.map(async (task) => {
+        const { section, trimmedHtml, texts } = task
+        const translationBatch = await withRetry(
+          () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
+          { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
+        )
+        const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
+        return { task, translationBatch, nextHtml }
       })
+    )
+
+    for (const { task, translationBatch, nextHtml } of results) {
+      const { section, texts } = task
+      cacheHits += translationBatch.cacheHits
+      cacheMisses += translationBatch.cacheMisses
+      processedBlocks += texts.length
+      processedWords += section.wordCount || section.stats?.wordCount || 0
+      zip.file(section.href, nextHtml)
+
+      if (onCheckpoint) {
+        await onCheckpoint({
+          updatedAt: new Date().toISOString(),
+          sectionId: section.id,
+          section: {
+            id: section.id,
+            href: section.href,
+            title: section.title,
+            translatedHtml: nextHtml,
+            processedBlocks: texts.length,
+            processedWords: section.wordCount || section.stats?.wordCount || 0,
+            cacheHits: translationBatch.cacheHits,
+            cacheMisses: translationBatch.cacheMisses,
+          },
+        })
+      }
     }
 
     if (onProgress) {
+      const lastSection = batch[batch.length - 1].section
       await onProgress({
         stage: 'translating',
         processedBlocks,
@@ -2291,8 +2310,8 @@ export async function exportTranslatedEpub(payload) {
         totalPages: Math.max(1, Math.ceil(totalWords / 300)),
         cacheHits,
         cacheMisses,
-        currentSectionId: section.id,
-        currentSectionTitle: section.title,
+        currentSectionId: lastSection.id,
+        currentSectionTitle: lastSection.title,
         percent:
           totalBlocks > 0
             ? Number((preparationWeight + (processedBlocks / totalBlocks) * (100 - preparationWeight)).toFixed(2))

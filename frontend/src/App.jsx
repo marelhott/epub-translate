@@ -659,6 +659,12 @@ export default function App() {
     const payload = await parseJsonSafely(response)
     if (!response.ok || !Array.isArray(payload)) return
     setJobs(payload.slice(0, 12))
+    // Auto-resume polling for an active job after page reload
+    setJob((current) => {
+      if (current?.id) return current
+      const active = payload.find((j) => j.status === 'processing' || j.status === 'queued')
+      return active || current
+    })
   }
 
   async function handleFileUpload(event) {
