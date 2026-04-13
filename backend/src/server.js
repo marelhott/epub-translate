@@ -48,6 +48,24 @@ function outputFilePath(jobId, fileName) {
   return join(OUTPUTS_DIR, `${jobId}__${fileName}`)
 }
 
+function asciiHeaderFileName(fileName = 'download.bin') {
+  const sanitized = String(fileName || 'download.bin')
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/["\\]/g, '')
+    .replace(/[<>:/|?*\x00-\x1F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return sanitized || 'download.bin'
+}
+
+function setAttachmentHeaders(res, fileName, contentType) {
+  const asciiName = asciiHeaderFileName(fileName)
+  const utf8Name = encodeURIComponent(String(fileName || asciiName))
+  res.setHeader('Content-Type', contentType)
+  res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`)
+}
+
 function hasZipSignature(buffer) {
   return Boolean(buffer?.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b)
 }
@@ -737,8 +755,7 @@ app.post('/api/export-html', upload.single('file'), async (req, res) => {
       targetLanguage: payload?.targetLanguage || 'cs',
       sections: payload?.sections || [],
     })
-    res.setHeader('Content-Type', 'text/html; charset=utf-8')
-    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`)
+    setAttachmentHeaders(res, result.fileName, 'text/html; charset=utf-8')
     return res.send(result.html)
   } catch (error) {
     return res.status(error.statusCode || 500).json({
@@ -761,8 +778,7 @@ app.post('/api/import-html', upload.single('file'), async (req, res) => {
       targetLanguage: payload?.targetLanguage || 'cs',
       sections: payload?.sections || [],
     })
-    res.setHeader('Content-Type', 'application/epub+zip')
-    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`)
+    setAttachmentHeaders(res, result.fileName, 'application/epub+zip')
     return res.send(result.buffer)
   } catch (error) {
     return res.status(error.statusCode || 500).json({
@@ -799,8 +815,7 @@ app.get('/api/jobs/:id/download', async (req, res) => {
     return res.status(404).json({ error: 'Výstupní EPUB zatím není k dispozici.' })
   }
 
-  res.setHeader('Content-Type', 'application/epub+zip')
-  res.setHeader('Content-Disposition', `attachment; filename="${job.outputFileName}"`)
+  setAttachmentHeaders(res, job.outputFileName, 'application/epub+zip')
   return res.send(output)
 })
 
