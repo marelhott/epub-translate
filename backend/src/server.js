@@ -155,6 +155,22 @@ async function listJobs() {
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
 }
 
+async function findConflictingActiveJob({ sessionId = '', fileName = '', excludeJobId = '' } = {}) {
+  const jobs = await listJobs()
+  return jobs.find((job) => {
+    if (!job?.id || job.id === excludeJobId) {
+      return false
+    }
+    if (!['queued', 'processing'].includes(job.status)) {
+      return false
+    }
+    return (
+      (sessionId && job.sessionId === sessionId) ||
+      (fileName && job.fileName === fileName)
+    )
+  }) || null
+}
+
 async function publicJob(job) {
   if (!job) {
     return null
@@ -753,6 +769,17 @@ app.post('/api/jobs/:id/resume', upload.single('file'), async (req, res) => {
     if (job.status === 'processing' && activeJobs.has(job.id)) {
       return res.status(409).json({ error: 'Job už právě běží.', job: await publicJob(job) })
     }
+    const conflictingJob = await findConflictingActiveJob({
+      sessionId: job.sessionId,
+      fileName: job.fileName,
+      excludeJobId: job.id,
+    })
+    if (conflictingJob) {
+      return res.status(409).json({
+        error: 'Pro tuto knihu už běží jiný překlad.',
+        job: await publicJob(conflictingJob),
+      })
+    }
 
     const payload = parseBodyPayload(req)
     const sourceBuffer = await resolveSourceBuffer({ sessionId: job.sessionId }, req.file)
@@ -800,6 +827,16 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
   try {
     const payload = parseBodyPayload(req)
     const sessionId = payload?.sessionId || randomUUID()
+    const conflictingJob = await findConflictingActiveJob({
+      sessionId,
+      fileName: payload?.fileName || req.file?.originalname || 'book.epub',
+    })
+    if (conflictingJob) {
+      return res.status(409).json({
+        error: 'Pro tuto knihu už běží jiný překlad.',
+        job: await publicJob(conflictingJob),
+      })
+    }
     const sourceBuffer = await resolveSourceBuffer(payload, req.file)
     const analysisSummary = payload?.analysisSummary || {}
     const { publicSettings, secretSettings } = splitJobSettings(payload?.settings || {})

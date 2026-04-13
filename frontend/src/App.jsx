@@ -193,6 +193,15 @@ function providerVersion(providerId) {
   if (providerId === 'glm') return '5.1'
   return 'api'
 }
+function stageLabel(stage) {
+  if (stage === 'preparing-export') return 'příprava sekcí'
+  if (stage === 'resuming-export') return 'obnova checkpointu'
+  if (stage === 'translating') return 'překládání'
+  if (stage === 'completed') return 'dokončeno'
+  if (stage === 'interrupted') return 'přerušeno'
+  if (stage === 'queued') return 've frontě'
+  return stage || '—'
+}
 function estimateCostEur(characters, ratePerMillionChars) {
   return (Number(characters || 0) / 1_000_000) * Number(ratePerMillionChars || 0)
 }
@@ -1228,7 +1237,7 @@ export default function App() {
                   </div>
                   <div className="wb-progress-grid">
                     <div className="wb-progress-cell">
-                      <span className="wb-progress-cell-val is-accent">{job?.progress?.stage || '—'}</span>
+                      <span className="wb-progress-cell-val is-accent">{stageLabel(job?.progress?.stage)}</span>
                       <span className="wb-progress-cell-lbl">fáze</span>
                     </div>
                     <div className="wb-progress-cell">

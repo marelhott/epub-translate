@@ -740,6 +740,49 @@ async function translateWholeSection(provider, html, options) {
   return raw
 }
 
+async function translateSectionWithFallback(provider, task, options) {
+  const { section, trimmedHtml, texts } = task
+  const isLlmProvider = ['openai', 'claude', 'glm'].includes(provider)
+
+  if (!isLlmProvider) {
+    const translationBatch = await withRetry(
+      () => translateTexts(provider, texts, options),
+      { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
+    )
+
+    return {
+      mode: 'chunked',
+      translationBatch,
+      nextHtml: applyTranslationsToHtml(trimmedHtml, translationBatch.translations),
+    }
+  }
+
+  try {
+    const nextHtml = await translateWholeSection(provider, trimmedHtml, options)
+    return {
+      mode: 'whole-section',
+      translationBatch: { cacheHits: 0, cacheMisses: texts.length },
+      nextHtml,
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error || 'Unknown error')
+    console.warn(
+      `[translateSectionWithFallback] ${provider} whole-section failed for "${section.title || section.id}", falling back to chunked mode: ${reason}`
+    )
+
+    const translationBatch = await withRetry(
+      () => translateTexts(provider, texts, options),
+      { retries: 3, initialDelayMs: 1000, label: `fallback section "${section.title || section.id}"` }
+    )
+
+    return {
+      mode: 'chunk-fallback',
+      translationBatch,
+      nextHtml: applyTranslationsToHtml(trimmedHtml, translationBatch.translations),
+    }
+  }
+}
+
 async function retryHtmlTranslator(translator, basePayload, buildRetryPayload) {
   const initial = await translator(basePayload)
   if (basePayload.format !== 'html' || looksLikeValidTranslatedFragment(basePayload.text, initial)) {
@@ -1655,9 +1698,9 @@ async function translateManyWithDeepL({
   return (payload?.translations || []).map((item) => item.text || '')
 }
 
-async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, format = 'text', settings }) {
+async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, format = 'text', settings, systemPrompt }) {
   if (shouldUseOpenRouter('openai', settings)) {
-    return translateWithOpenRouter({ provider: 'openai', text, sourceLanguage, targetLanguage, format, settings })
+    return translateWithOpenRouter({ provider: 'openai', text, sourceLanguage, targetLanguage, format, settings, systemPrompt })
   }
   const apiKey = settings?.openai?.apiKey || process.env.OPENAI_API_KEY
   if (!apiKey) {
@@ -1681,9 +1724,10 @@ async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, forma
             {
               type: 'input_text',
               text:
-                format === 'html'
+                systemPrompt ||
+                (format === 'html'
                   ? 'You translate non-fiction book content inside HTML fragments. Preserve the exact HTML tag structure, keep tags unchanged, translate only visible text nodes, and output HTML only.'
-                  : 'You translate non-fiction book content. Preserve factual meaning, named entities, chronology, and terminology. Do not add commentary.',
+                  : 'You translate non-fiction book content. Preserve factual meaning, named entities, chronology, and terminology. Do not add commentary.'),
             },
           ],
         },
@@ -1692,7 +1736,9 @@ async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, forma
           content: [
             {
               type: 'input_text',
-              text: `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
+              text: systemPrompt
+                ? text
+                : `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
             },
           ],
         },
@@ -1785,9 +1831,9 @@ async function translateManyWithGoogle({
   return (payload.translations || []).map((item) => item.translatedText || '')
 }
 
-async function translateWithClaude({ text, sourceLanguage, targetLanguage, format = 'text', settings }) {
+async function translateWithClaude({ text, sourceLanguage, targetLanguage, format = 'text', settings, systemPrompt }) {
   if (shouldUseOpenRouter('claude', settings)) {
-    return translateWithOpenRouter({ provider: 'claude', text, sourceLanguage, targetLanguage, format, settings })
+    return translateWithOpenRouter({ provider: 'claude', text, sourceLanguage, targetLanguage, format, settings, systemPrompt })
   }
   const apiKey = settings?.claude?.apiKey || process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
@@ -1807,13 +1853,16 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
         settings?.claude?.model || process.env.ANTHROPIC_TRANSLATION_MODEL || 'claude-sonnet-4-6',
       max_tokens: 16384,
       system:
-        format === 'html'
+        systemPrompt ||
+        (format === 'html'
           ? 'Translate non-fiction book text inside HTML fragments. Preserve the exact HTML tags and structure, translate only the visible text, and output HTML only.'
-          : 'Translate non-fiction book text faithfully. Preserve terminology, names, chronology, and explanatory clarity. Output translation only.',
+          : 'Translate non-fiction book text faithfully. Preserve terminology, names, chronology, and explanatory clarity. Output translation only.'),
       messages: [
         {
           role: 'user',
-          content: `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
+          content: systemPrompt
+            ? text
+            : `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
         },
       ],
     }),
@@ -1827,9 +1876,9 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
   return payload.content?.[0]?.text || ''
 }
 
-async function translateWithGlm({ text, sourceLanguage, targetLanguage, format = 'text', settings }) {
+async function translateWithGlm({ text, sourceLanguage, targetLanguage, format = 'text', settings, systemPrompt }) {
   if (shouldUseOpenRouter('glm', settings)) {
-    return translateWithOpenRouter({ provider: 'glm', text, sourceLanguage, targetLanguage, format, settings })
+    return translateWithOpenRouter({ provider: 'glm', text, sourceLanguage, targetLanguage, format, settings, systemPrompt })
   }
   const baseUrl =
     settings?.glm?.baseUrl || process.env.GLM_API_BASE_URL || 'https://api.z.ai/api/coding/paas/v4'
@@ -1862,13 +1911,16 @@ async function translateWithGlm({ text, sourceLanguage, targetLanguage, format =
         {
           role: 'system',
           content:
-            format === 'html'
+            systemPrompt ||
+            (format === 'html'
               ? 'Translate non-fiction book content inside HTML fragments. Preserve the exact HTML tag structure, keep tags unchanged, translate only visible text nodes, and output HTML only.'
-              : 'You translate non-fiction book content faithfully. Preserve terminology, named entities, chronology, and explanatory clarity. Output translation only.',
+              : 'You translate non-fiction book content faithfully. Preserve terminology, named entities, chronology, and explanatory clarity. Output translation only.'),
         },
         {
           role: 'user',
-          content: `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
+          content: systemPrompt
+            ? text
+            : `Source language: ${sourceLanguage || 'auto'}\nTarget language: ${targetLanguage || 'cs'}\n\nText:\n${text}`,
         },
       ],
     }),
@@ -2358,28 +2410,17 @@ export async function exportTranslatedEpub(payload) {
   function launchNext() {
     if (taskIndex >= resumableTasks.length) return null
     const task = resumableTasks[taskIndex++]
-    const { section, html, trimmedHtml, texts } = task
-
-    let promise
-    if (isLlmProvider) {
-      // Whole-section mode: send full HTML, get full HTML back — preserves context and gender
-      promise = translateWholeSection(provider, trimmedHtml, { sourceLanguage, targetLanguage, settings })
-        .then((nextHtml) => ({
-          task,
-          translationBatch: { cacheHits: 0, cacheMisses: texts.length },
-          nextHtml,
-          promise: null, // filled below
-        }))
-    } else {
-      // Chunk-based mode for DeepL/Google
-      promise = withRetry(
-        () => translateTexts(provider, texts, { sourceLanguage, targetLanguage, settings }),
-        { retries: 3, initialDelayMs: 1000, label: `section "${section.title || section.id}"` }
-      ).then((translationBatch) => {
-        const nextHtml = applyTranslationsToHtml(trimmedHtml, translationBatch.translations)
-        return { task, translationBatch, nextHtml, promise: null }
-      })
-    }
+    const promise = translateSectionWithFallback(provider, task, {
+      sourceLanguage,
+      targetLanguage,
+      settings,
+    }).then(({ mode, translationBatch, nextHtml }) => ({
+      task,
+      mode,
+      translationBatch,
+      nextHtml,
+      promise: null,
+    }))
 
     // Attach self-reference for Promise.race tracking
     const tracked = promise.then((result) => { result.promise = tracked; return result })
@@ -2396,7 +2437,7 @@ export async function exportTranslatedEpub(payload) {
     const settled = await Promise.race(inflightSet)
     inflightSet.delete(settled.promise)
 
-    const { task, translationBatch, nextHtml } = settled
+    const { task, mode, translationBatch, nextHtml } = settled
     const { section, texts } = task
     cacheHits += translationBatch.cacheHits
     cacheMisses += translationBatch.cacheMisses
@@ -2433,7 +2474,7 @@ export async function exportTranslatedEpub(payload) {
         cacheHits,
         cacheMisses,
         currentSectionId: section.id,
-        currentSectionTitle: section.title,
+        currentSectionTitle: mode === 'chunk-fallback' ? `${section.title} · fallback` : section.title,
         percent:
           totalBlocks > 0
             ? Number((preparationWeight + (processedBlocks / totalBlocks) * (100 - preparationWeight)).toFixed(2))
