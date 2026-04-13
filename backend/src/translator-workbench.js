@@ -954,26 +954,38 @@ async function translateTexts(provider, texts, options) {
   }
 
   if (['openai', 'claude', 'glm'].includes(provider) && misses.length) {
-    try {
-      const missingTranslations = await translateManyWithLlm(provider, misses, options)
-      misses.forEach((item, missIndex) => {
-        const translation = missingTranslations[missIndex] || ''
-        translations[item.index] = translation
-        cache[item.key] = {
+    // Try full-size batches first, then retry with half-size batches on failure.
+    // Never fall back to serial (1-by-1) — it's 10-50x more expensive.
+    let lastError = null
+    for (const batchSize of [24, 10, 4]) {
+      try {
+        const missingTranslations = await translateManyWithLlm(
           provider,
-          sourceLanguage: options.sourceLanguage || '',
-          targetLanguage: options.targetLanguage || '',
-          translation,
-          updatedAt: new Date().toISOString(),
-        }
-      })
-      saveCache(cache)
-      return { translations, cacheHits, cacheMisses: misses.length }
-    } catch (error) {
-      console.warn(`[translateTexts] batched ${provider} translation failed, falling back to serial`, error?.message)
+          misses,
+          { ...options, _batchOverride: { maxItems: batchSize, maxChars: batchSize * 750 } }
+        )
+        misses.forEach((item, missIndex) => {
+          const translation = missingTranslations[missIndex] || ''
+          translations[item.index] = translation
+          cache[item.key] = {
+            provider,
+            sourceLanguage: options.sourceLanguage || '',
+            targetLanguage: options.targetLanguage || '',
+            translation,
+            updatedAt: new Date().toISOString(),
+          }
+        })
+        saveCache(cache)
+        return { translations, cacheHits, cacheMisses: misses.length }
+      } catch (error) {
+        lastError = error
+        console.warn(`[translateTexts] ${provider} batch (size=${batchSize}) failed, trying smaller`, error?.message)
+      }
     }
+    throw normalizeProviderError(lastError, provider)
   }
 
+  // Non-LLM providers: serial as before
   for (const item of misses) {
     let output = ''
     try {
@@ -1062,28 +1074,28 @@ function extractJsonTranslationArray(raw) {
 }
 
 async function translateManyWithLlm(provider, misses, options) {
-  const chunks = chunkTranslationMisses(misses)
+  const chunks = chunkTranslationMisses(misses, options._batchOverride)
   const LLM_CONCURRENCY = 4
   const outputs = new Array(chunks.length)
+  const abortController = new AbortController()
 
   for (let start = 0; start < chunks.length; start += LLM_CONCURRENCY) {
     const batch = chunks.slice(start, start + LLM_CONCURRENCY)
     const results = await Promise.all(
       batch.map(async (chunk) => {
-        const payload = chunk.map((item, index) => ({
-          index,
-          format: item.format || 'text',
-          text: item.source,
-        }))
+        if (abortController.signal.aborted) throw new Error('Batch aborted due to earlier failure')
+        // Send compact payload: just an array of strings — saves ~30% input tokens
+        const texts = chunk.map((item) => item.source)
+        const hasHtml = chunk.some((item) => item.format === 'html')
 
         const raw = await withRetry(
           () =>
             translators[provider]({
               text:
-                `Translate this JSON array from ${options.sourceLanguage || 'auto'} to ${options.targetLanguage || 'cs'}.\n` +
-                'Return ONLY a valid JSON array of strings with the exact same length and order.\n' +
-                'Each item may be an HTML fragment. Preserve all tags and attributes inside each fragment and translate only visible text.\n\n' +
-                JSON.stringify(payload),
+                `Translate from ${options.sourceLanguage || 'auto'} to ${options.targetLanguage || 'cs'}. ` +
+                `Return ONLY a JSON array of ${texts.length} translated strings, same order.` +
+                (hasHtml ? ' Preserve HTML tags, translate only text.' : '') +
+                '\n\n' + JSON.stringify(texts),
               sourceLanguage: options.sourceLanguage,
               targetLanguage: options.targetLanguage,
               format: 'text',
@@ -1094,7 +1106,8 @@ async function translateManyWithLlm(provider, misses, options) {
 
         const parsed = extractJsonTranslationArray(raw)
         if (!parsed || parsed.length !== chunk.length) {
-          throw new Error(`Batched ${provider} translation returned invalid JSON length.`)
+          abortController.abort()
+          throw new Error(`Batched ${provider} translation returned ${parsed?.length ?? 'null'} items, expected ${chunk.length}.`)
         }
         return parsed
       })
