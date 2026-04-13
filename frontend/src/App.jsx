@@ -552,6 +552,7 @@ export default function App() {
   const pollingRef = useRef({ jobId: '', startedAt: 0, failures: 0 })
   const idbSectionsRef = useRef(0)
   const previewAbortRef = useRef(null)
+  const htmlImportInputRef = useRef(null)
   const [filters, setFilters] = useState({ includeMain: true, includeFront: false, includeBack: false, includeUnknown: false })
 
   useEffect(() => {
@@ -964,6 +965,86 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  async function downloadExternalHtml() {
+    if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
+    setError('')
+    setStatusText('Připravuju HTML export…')
+    try {
+      const requestPayload = {
+        sessionId: analysis.sessionId,
+        fileName: analysis.fileName,
+        sourceLanguage: analysis.metadata.language || 'en',
+        targetLanguage: 'cs',
+        sections: analysis.sections,
+        analysisSummary: analysis.summary,
+      }
+      const response = await fetch(apiUrl('/api/export-html'), {
+        method: 'POST',
+        body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
+      })
+      if (!response.ok) {
+        const payload = await parseJsonSafely(response)
+        throw new Error(payload?.detail || payload?.error || 'HTML export selhal.')
+      }
+      const blob = await response.blob()
+      const contentDisposition = response.headers.get('Content-Disposition') || ''
+      const match = contentDisposition.match(/filename="?([^"]+)"?/)
+      const fileName = match?.[1] || `${analysis.fileName?.replace(/\.epub$/i, '') || 'book'}.html`
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      setStatusText('HTML export připraven. Můžeš ho přeložit mimo appku.')
+    } catch (exportError) {
+      setError(exportError.message)
+      setStatusText('HTML export selhal.')
+    }
+  }
+
+  async function handleTranslatedHtmlImport(event) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !analysis?.sessionId || !originalBookData) return
+    setError('')
+    setStatusText('Nahrávám přeložené HTML a balím EPUB…')
+    try {
+      const formData = new FormData()
+      formData.append('payload', JSON.stringify({
+        sessionId: analysis.sessionId,
+        fileName: analysis.fileName,
+        sourceLanguage: analysis.metadata.language || 'en',
+        targetLanguage: 'cs',
+        sections: analysis.sections,
+        analysisSummary: analysis.summary,
+      }))
+      formData.append('file', file, file.name)
+      const response = await fetch(apiUrl('/api/import-html'), {
+        method: 'POST',
+        body: formData,
+      })
+      if (!response.ok) {
+        const payload = await parseJsonSafely(response)
+        throw new Error(payload?.detail || payload?.error || 'Import HTML selhal.')
+      }
+      const blob = await response.blob()
+      const contentDisposition = response.headers.get('Content-Disposition') || ''
+      const match = contentDisposition.match(/filename="?([^"]+)"?/)
+      const fileName = match?.[1] || 'translated.from-html.epub'
+      const bookData = await blob.arrayBuffer()
+      setTranslatedBlob(blob)
+      setTranslatedBookData(bookData)
+      setExportMeta({ fileName, cacheHits: 0, cacheMisses: 0 })
+      setStatusText('HTML import hotový. EPUB je připraven ke stažení.')
+    } catch (importError) {
+      setError(importError.message)
+      setStatusText('Import HTML selhal.')
+    }
+  }
+
   const rightMode = !originalBookData ? 'empty'
     : isPreviewLoading ? 'preview-progress'
     : job && job.status !== 'completed' && job.status !== 'failed' ? 'progress'
@@ -1043,6 +1124,13 @@ export default function App() {
                 <span className="wb-upload-hint">.epub</span>
                 <input type="file" accept=".epub,application/epub+zip" onChange={handleFileUpload} />
               </label>
+              <input
+                ref={htmlImportInputRef}
+                type="file"
+                accept=".html,text/html"
+                onChange={handleTranslatedHtmlImport}
+                style={{ display: 'none' }}
+              />
             </div>
 
             {/* Book meta */}
@@ -1341,6 +1429,20 @@ export default function App() {
                 onClick={startTranslation}
               >
                 Spustit překlad
+              </button>
+              <button
+                className="wb-btn wb-btn--preview"
+                disabled={!includedSections.length || !originalBookData}
+                onClick={downloadExternalHtml}
+              >
+                Stáhnout HTML
+              </button>
+              <button
+                className="wb-btn wb-btn--translate"
+                disabled={!analysis?.sessionId || !originalBookData}
+                onClick={() => htmlImportInputRef.current?.click()}
+              >
+                Nahrát HTML
               </button>
               <button
                 className="wb-btn wb-btn--download"

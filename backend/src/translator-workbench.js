@@ -305,6 +305,40 @@ function buildOutputFileName(metadata, originalFileName, targetLanguage) {
   return `${fileNameWithoutExtension(originalFileName)} (${targetLanguage}).epub`
 }
 
+function buildHtmlExportFileName(metadata, originalFileName, targetLanguage) {
+  const title = sanitizeFileName(
+    normalizeText(toArray(metadata?.title)?.[0]?.['#text'] || toArray(metadata?.title)?.[0] || '')
+  )
+  const author = sanitizeFileName(
+    normalizeText(toArray(metadata?.creator)?.[0]?.['#text'] || toArray(metadata?.creator)?.[0] || '')
+  )
+  const base =
+    title && author ? `${author} – ${title}` : title || fileNameWithoutExtension(originalFileName) || 'book'
+  return `${base} (${targetLanguage}).html`
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function extractBodyInnerHtml(html) {
+  const bodyMatch = String(html || '').match(/<body[^>]*>([\s\S]*)<\/body>/i)
+  return bodyMatch?.[1]?.trim() || String(html || '').trim()
+}
+
+function injectBodyInnerHtml(originalHtml, bodyInnerHtml) {
+  const source = String(originalHtml || '')
+  if (/<body[^>]*>/i.test(source)) {
+    return source.replace(/(<body[^>]*>)([\s\S]*?)(<\/body>)/i, `$1${bodyInnerHtml}$3`)
+  }
+  return bodyInnerHtml
+}
+
 function extractBodyText(html) {
   const $ = cheerio.load(html, { xmlMode: true })
 
@@ -1444,6 +1478,174 @@ export async function analyzeEpubBuffer(buffer, options = {}) {
       estimatedPages: Math.max(1, Math.ceil(translatedWords / 300)),
     },
     sections: boundedSections,
+  }
+}
+
+export async function exportEpubToHtml(payload) {
+  const {
+    buffer,
+    fileName = 'book.epub',
+    sourceLanguage = '',
+    targetLanguage = 'cs',
+    sections = [],
+  } = payload || {}
+
+  if (!buffer) {
+    throw new Error('Chybí zdrojový EPUB buffer.')
+  }
+
+  const zip = await JSZip.loadAsync(buffer)
+  const packagePath = await readContainer(zip)
+  const pkg = await readPackage(zip, packagePath)
+  const cover = await extractCoverData(zip, packagePath, pkg)
+  const includedSections = sections.filter((section) => section.includeInTranslation)
+
+  const exportedSections = []
+  for (const section of includedSections) {
+    const file = zip.file(section.href)
+    if (!file) {
+      continue
+    }
+    const html = await file.async('string')
+    exportedSections.push({
+      id: section.id,
+      href: section.href,
+      title: section.title,
+      bodyHtml: extractBodyInnerHtml(html),
+    })
+  }
+
+  const title = normalizeText(toArray(pkg.metadata?.title)?.[0]?.['#text'] || toArray(pkg.metadata?.title)?.[0] || fileName)
+  const author = normalizeText(toArray(pkg.metadata?.creator)?.[0]?.['#text'] || toArray(pkg.metadata?.creator)?.[0] || '')
+  const html = `<!doctype html>
+<html lang="${escapeHtml(targetLanguage || 'cs')}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="ebook-source-language" content="${escapeHtml(sourceLanguage || '')}" />
+    <meta name="ebook-target-language" content="${escapeHtml(targetLanguage || 'cs')}" />
+    <title>${escapeHtml(title)}${author ? ` — ${escapeHtml(author)}` : ''}</title>
+    <style>
+      body { font-family: Georgia, "Times New Roman", serif; line-height: 1.6; margin: 0; color: #1b1b1b; background: #faf8f2; }
+      main { max-width: 900px; margin: 0 auto; padding: 40px 24px 120px; }
+      .ebook-meta { margin-bottom: 40px; padding-bottom: 24px; border-bottom: 1px solid #d8d1c2; }
+      .ebook-cover { max-width: 160px; display: block; margin-bottom: 20px; border-radius: 6px; }
+      .ebook-title { font-size: 40px; margin: 0 0 8px; }
+      .ebook-author { font-size: 24px; margin: 0 0 16px; color: #5e5a52; }
+      .ebook-note { font-size: 14px; color: #6c675d; }
+      .ebook-section { margin: 0 0 52px; padding-bottom: 36px; border-bottom: 1px solid #e5dfd1; }
+      .ebook-section-label { font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; color: #7c7567; margin: 0 0 18px; }
+      .ebook-section-title { font-size: 28px; margin: 0 0 18px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="ebook-meta">
+        ${cover?.dataUrl ? `<img class="ebook-cover" src="${cover.dataUrl}" alt="${escapeHtml(title)} cover" />` : ''}
+        <h1 class="ebook-title">${escapeHtml(title)}</h1>
+        ${author ? `<p class="ebook-author">${escapeHtml(author)}</p>` : ''}
+        <p class="ebook-note">Externí překladový export. Zachovej HTML tagy i atributy uvnitř sekcí. Nepřekládej technické identifikátory v atributech.</p>
+      </header>
+      ${exportedSections.map((section, index) => `
+        <article class="ebook-section" data-ebook-id="${escapeHtml(section.id)}" data-ebook-href="${escapeHtml(section.href)}">
+          <div class="ebook-section-label">Sekce ${index + 1}</div>
+          <h2 class="ebook-section-title">${escapeHtml(section.title)}</h2>
+          <div class="ebook-section-body">
+            ${section.bodyHtml}
+          </div>
+        </article>
+      `).join('\n')}
+    </main>
+  </body>
+</html>`
+
+  return {
+    html,
+    fileName: buildHtmlExportFileName(pkg.metadata, fileName, targetLanguage),
+    stats: {
+      sections: exportedSections.length,
+      words: includedSections.reduce((sum, section) => sum + (section.stats?.wordCount || 0), 0),
+      characters: includedSections.reduce((sum, section) => sum + (section.stats?.characterCount || 0), 0),
+    },
+  }
+}
+
+export async function importTranslatedHtmlToEpub(payload) {
+  const {
+    buffer,
+    translatedHtml = '',
+    fileName = 'book.epub',
+    targetLanguage = 'cs',
+    sections = [],
+  } = payload || {}
+
+  if (!buffer) {
+    throw new Error('Chybí zdrojový EPUB buffer.')
+  }
+  if (!translatedHtml.trim()) {
+    throw new Error('Chybí přeložený HTML obsah.')
+  }
+
+  const zip = await JSZip.loadAsync(buffer)
+  const packagePath = await readContainer(zip)
+  const pkg = await readPackage(zip, packagePath)
+  const translatedDoc = cheerio.load(translatedHtml)
+
+  const translatedSections = new Map()
+  translatedDoc('[data-ebook-id]').each((_index, element) => {
+    const id = translatedDoc(element).attr('data-ebook-id') || ''
+    const bodyHtml = translatedDoc(element).find('.ebook-section-body').first().html() || ''
+    if (id && bodyHtml.trim()) {
+      translatedSections.set(id, bodyHtml.trim())
+    }
+  })
+
+  let importedCount = 0
+  for (const section of sections.filter((item) => item.includeInTranslation)) {
+    const file = zip.file(section.href)
+    const translatedBody = translatedSections.get(section.id)
+    if (!file || !translatedBody) {
+      continue
+    }
+    const originalHtml = await file.async('string')
+    zip.file(section.href, injectBodyInnerHtml(originalHtml, translatedBody))
+    importedCount += 1
+  }
+
+  if (pkg.metadata) {
+    const langVal = pkg.metadata.language
+    if (Array.isArray(langVal)) {
+      pkg.metadata.language = [targetLanguage, ...langVal.slice(1)]
+    } else if (langVal !== null && typeof langVal === 'object') {
+      pkg.metadata.language = { ...langVal, '#text': targetLanguage }
+    } else {
+      pkg.metadata.language = targetLanguage
+    }
+  }
+  zip.file(packagePath, xmlBuilder.build({ package: pkg }))
+
+  const orderedZip = new JSZip()
+  orderedZip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
+  for (const [name, zipEntry] of Object.entries(zip.files)) {
+    if (name === 'mimetype' || zipEntry.dir) continue
+    const content = await zipEntry.async('nodebuffer')
+    orderedZip.file(name, content)
+  }
+
+  const rebuilt = await orderedZip.generateAsync({
+    type: 'nodebuffer',
+    mimeType: 'application/epub+zip',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  })
+
+  return {
+    buffer: rebuilt,
+    fileName: buildOutputFileName(pkg.metadata, fileName, targetLanguage),
+    stats: {
+      importedSections: importedCount,
+      availableSections: translatedSections.size,
+    },
   }
 }
 

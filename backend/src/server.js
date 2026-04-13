@@ -9,7 +9,9 @@ import {
   analyzeEpubBuffer,
   buildExportPlan,
   buildProviderMatrix,
+  exportEpubToHtml,
   exportTranslatedEpub,
+  importTranslatedHtmlToEpub,
   JOBS_DIR,
   OUTPUTS_DIR,
   translatePreviewFromEpub,
@@ -720,6 +722,51 @@ app.post('/api/translate-preview', upload.single('file'), async (req, res) => {
   } catch (error) {
     return res.status(error.statusCode || 500).json({
       error: 'Nepodařilo se připravit překladový preview výstup.',
+      detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
+    })
+  }
+})
+
+app.post('/api/export-html', upload.single('file'), async (req, res) => {
+  try {
+    const payload = parseBodyPayload(req)
+    const result = await exportEpubToHtml({
+      buffer: await resolveSourceBuffer(payload, req.file),
+      fileName: payload?.fileName || req.file?.originalname || 'book.epub',
+      sourceLanguage: payload?.sourceLanguage || '',
+      targetLanguage: payload?.targetLanguage || 'cs',
+      sections: payload?.sections || [],
+    })
+    res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`)
+    return res.send(result.html)
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      error: 'Nepodařilo se vyexportovat HTML.',
+      detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
+    })
+  }
+})
+
+app.post('/api/import-html', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'Chybí přeložený HTML soubor.' })
+    }
+    const payload = parseBodyPayload(req)
+    const result = await importTranslatedHtmlToEpub({
+      buffer: await resolveSourceBuffer(payload, null),
+      translatedHtml: req.file.buffer.toString('utf-8'),
+      fileName: payload?.fileName || 'book.epub',
+      targetLanguage: payload?.targetLanguage || 'cs',
+      sections: payload?.sections || [],
+    })
+    res.setHeader('Content-Type', 'application/epub+zip')
+    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`)
+    return res.send(result.buffer)
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      error: 'Nepodařilo se zabalit přeložený HTML zpět do EPUB.',
       detail: error?.detail || (error instanceof Error ? error.message : 'Unknown error'),
     })
   }
