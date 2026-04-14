@@ -1120,7 +1120,9 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   background: transparent;
 }
 
@@ -1221,6 +1223,17 @@
   padding-right: 3px;
 }
 
+.wb-audit-result {
+  padding: 18px;
+  overflow: auto;
+  height: 100%;
+}
+
+.wb-audit-diff-list--result {
+  max-height: none;
+  padding-bottom: 18px;
+}
+
 .wb-audit-diff-title {
   font-family: var(--mono);
   font-size: 10px;
@@ -1296,6 +1309,17 @@
   border: 1px dashed rgba(0,0,0,0.1);
   border-radius: 8px;
   padding: 12px;
+}
+
+.wb-action-group--final {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: rgba(255,255,255,0.95);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: rgba(0,0,0,0.05) 0 -8px 18px;
 }
 
 /* Buttons */

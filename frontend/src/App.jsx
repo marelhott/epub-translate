@@ -295,6 +295,13 @@ function auditSeverityLabel(severity) {
   if (severity === 'low') return 'nízká'
   return severity || '—'
 }
+function htmlToPlainText(html) {
+  if (!html) return ''
+  if (typeof window === 'undefined') return String(html).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  const template = window.document.createElement('template')
+  template.innerHTML = String(html)
+  return (template.content.textContent || '').replace(/\s+/g, ' ').trim()
+}
 function estimateCostEur(characters, ratePerMillionChars) {
   return (Number(characters || 0) / 1_000_000) * Number(ratePerMillionChars || 0)
 }
@@ -962,6 +969,24 @@ export default function App() {
       : []
   ), [reviewJob])
 
+  const auditPanelFindings = useMemo(() => {
+    if (liveAuditFindings.length) return liveAuditFindings
+    return selectedAuditFindings
+      .filter((finding) => finding.suggestedText || finding.suggestedHtml)
+      .map((finding) => ({
+        sectionId: finding._sectionId,
+        title: finding._sectionTitle,
+        index: finding.index,
+        issueType: finding.issueType,
+        severity: finding.severity,
+        confidence: finding.confidence,
+        reason: finding.reason,
+        autoApplied: finding.autoApplied,
+        beforeText: finding.translatedText,
+        afterText: finding.suggestedText || htmlToPlainText(finding.suggestedHtml),
+      }))
+  }, [liveAuditFindings, selectedAuditFindings])
+
 
   function updateSettings(section, field, value) {
     setSettings((cur) => ({ ...cur, [section]: { ...cur[section], [field]: value } }))
@@ -1402,6 +1427,7 @@ export default function App() {
     : reviewJob && reviewJob.status !== 'completed' && reviewJob.status !== 'failed' ? 'review-progress'
     : job && job.status !== 'completed' && job.status !== 'failed' ? 'progress'
     : translatedBookData ? 'translated'
+    : selectedAuditResult ? 'audit-result'
     : preview ? 'preview-result'
     : 'original'
 
@@ -1415,7 +1441,7 @@ export default function App() {
     upload: !analysis,
     analyze: !!analysis && rightMode === 'original',
     preview: rightMode === 'preview-progress' || rightMode === 'preview-result',
-    export: rightMode === 'progress' || rightMode === 'review-progress' || rightMode === 'translated',
+    export: rightMode === 'progress' || rightMode === 'review-progress' || rightMode === 'audit-result' || rightMode === 'translated',
   }
 
   return (
@@ -1772,10 +1798,10 @@ export default function App() {
                       ? `→ ${reviewJob.progress.currentSectionTitle}`
                       : 'Audituju další sekci…'}
                   </div>
-                  {liveAuditFindings.length ? (
+                  {auditPanelFindings.length ? (
                     <div className="wb-audit-diff-list">
                       <div className="wb-audit-diff-title">Poslední nalezené chyby</div>
-                      {liveAuditFindings.map((finding, index) => (
+                      {auditPanelFindings.map((finding, index) => (
                         <div key={`${finding.sectionId || 'section'}-${finding.index ?? index}-${index}`} className="wb-audit-diff-card">
                           <div className="wb-audit-diff-head">
                             <span>{finding.title || finding.sectionId || 'sekce'}</span>
@@ -1803,6 +1829,70 @@ export default function App() {
                   ) : (
                     <div className="wb-audit-empty-note">
                       Jakmile audit najde větu s opravou, ukážu ji tady jako původní znění a opravenou verzi.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {rightMode === 'audit-result' && (
+                <div className="wb-audit-result">
+                  <div className="wb-progress-head">
+                    <div>
+                      <div className="wb-progress-label">Audit překladu dokončen</div>
+                      <div className="wb-progress-title">
+                        {selectedReviewProvider === 'claude' ? 'Claude Sonnet 4.6' : 'OpenAI GPT-5.4'}
+                      </div>
+                    </div>
+                    <div className="wb-progress-clock">
+                      <span className="wb-progress-pct">{selectedAuditResult?.summary?.findingsCount || 0} nálezů</span>
+                      <span className="wb-progress-time">{selectedAuditResult?.summary?.autoAppliedCount || 0} safe</span>
+                    </div>
+                  </div>
+                  <div className="wb-progress-grid">
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val is-accent">{selectedAuditResult?.summary?.autoAppliedCount || 0}</span>
+                      <span className="wb-progress-cell-lbl">bezpečných oprav</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{selectedAuditResult?.summary?.findingsCount || 0}</span>
+                      <span className="wb-progress-cell-lbl">nalezených míst</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{selectedAuditResult?.summary?.changedSections || 0}</span>
+                      <span className="wb-progress-cell-lbl">sekcí se změnou</span>
+                    </div>
+                  </div>
+                  {auditPanelFindings.length ? (
+                    <div className="wb-audit-diff-list wb-audit-diff-list--result">
+                      <div className="wb-audit-diff-title">Nalezené chyby a navržené opravy</div>
+                      {auditPanelFindings.map((finding, index) => (
+                        <div key={`${finding.sectionId || 'section'}-${finding.index ?? index}-${index}`} className="wb-audit-diff-card">
+                          <div className="wb-audit-diff-head">
+                            <span>{finding.title || finding.sectionId || 'sekce'}</span>
+                            <span>
+                              {auditIssueLabel(finding.issueType)} · {auditSeverityLabel(finding.severity)} · {Math.round(Number(finding.confidence || 0) * 100)}%
+                              {finding.autoApplied ? ' · použito' : ' · návrh'}
+                            </span>
+                          </div>
+                          {finding.reason ? (
+                            <div className="wb-audit-diff-reason">{finding.reason}</div>
+                          ) : null}
+                          <div className="wb-audit-diff-pair">
+                            <div>
+                              <span>Původní znění</span>
+                              <p>{finding.beforeText || '—'}</p>
+                            </div>
+                            <div>
+                              <span>Opravené znění</span>
+                              <p>{finding.afterText || '—'}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="wb-audit-empty-note">
+                      Audit nenašel žádnou opravu s konkrétním navrženým zněním.
                     </div>
                   )}
                 </div>
@@ -1912,22 +2002,6 @@ export default function App() {
                 {selectedAuditResult ? (
                   <div className="wb-action-note">
                     {selectedAuditResult.summary?.findingsCount || 0} nálezů, {selectedAuditResult.summary?.autoAppliedCount || 0} bezpečně použitých oprav, {selectedAuditResult.summary?.changedSections || 0} sekcí se změnou.
-                  </div>
-                ) : null}
-                {selectedAuditFindings.length ? (
-                  <div className="wb-review-findings">
-                    {selectedAuditFindings.map((finding) => (
-                      <div key={finding._findingKey} className="wb-review-finding">
-                        <div className="wb-review-finding-head">
-                          <span>{finding._sectionTitle || finding._sectionId}</span>
-                          <span>{auditIssueLabel(finding.issueType)} · {auditSeverityLabel(finding.severity)} · {Math.round(Number(finding.confidence || 0) * 100)}%</span>
-                        </div>
-                        <div className="wb-review-finding-body">{finding.reason}</div>
-                        {finding.autoApplied ? (
-                          <div className="wb-review-finding-note">Bezpečná oprava byla použita automaticky.</div>
-                        ) : null}
-                      </div>
-                    ))}
                   </div>
                 ) : null}
               </div>
