@@ -92,7 +92,7 @@ const DEFAULT_SETTINGS = {
     baseUrl: 'https://openrouter.ai/api/v1',
     useForAll: true,
     openaiModel: 'openai/gpt-5.4',
-    claudeModel: 'anthropic/claude-sonnet-4-6',
+    claudeModel: 'anthropic/claude-sonnet-4.6',
     googleModel: 'google/gemini-2.5-pro',
     glmModel: 'z-ai/glm-5',
   },
@@ -110,7 +110,7 @@ const DEFAULT_SETTINGS = {
   },
   openai: { apiKey: '', model: 'gpt-5.4' },
   google: { accessToken: '', project: '' },
-  claude: { apiKey: '', model: 'claude-sonnet-4-6' },
+  claude: { apiKey: '', model: 'claude-sonnet-4.6' },
   glm: { apiKey: '', baseUrl: '', model: 'glm-5.1' },
   // Sazby EUR/1M znaků — reálné tržní ceny (duben 2026)
   // LLM modely: ~2500 tokenů/10k znaků, input+output kombinovaně
@@ -151,7 +151,7 @@ function applyEffectiveProviderSettings(settings) {
     next.claude = {
       ...(next.claude || {}),
       apiKey: next.claude?.apiKey || sharedKey,
-      model: next.claude?.model || next.openrouter.claudeModel || 'claude-sonnet-4-6',
+      model: next.claude?.model || next.openrouter.claudeModel || 'claude-sonnet-4.6',
     }
     next.google = {
       ...(next.google || {}),
@@ -169,6 +169,27 @@ function applyEffectiveProviderSettings(settings) {
   return next
 }
 
+function normalizeClaudeSettingsShape(settings) {
+  const next =
+    typeof structuredClone !== 'undefined'
+      ? structuredClone(settings)
+      : JSON.parse(JSON.stringify(settings))
+
+  const normalizeModel = (value, fallback = '') => {
+    const raw = String(value || fallback || '').trim()
+    if (!raw) return raw
+    if (raw === 'anthropic/claude-sonnet-4-6') return 'anthropic/claude-sonnet-4.6'
+    if (raw === 'claude-sonnet-4-6') return 'claude-sonnet-4.6'
+    return raw
+  }
+
+  next.openrouter = { ...(next.openrouter || {}) }
+  next.claude = { ...(next.claude || {}) }
+  next.openrouter.claudeModel = normalizeModel(next.openrouter.claudeModel, DEFAULT_SETTINGS.openrouter.claudeModel)
+  next.claude.model = normalizeModel(next.claude.model, DEFAULT_SETTINGS.claude.model)
+  return next
+}
+
 function loadStoredSettings() {
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY) || window.sessionStorage.getItem(SETTINGS_STORAGE_KEY)
@@ -181,7 +202,7 @@ function loadStoredSettings() {
     if (!migratedOpenRouter.glmModel && migratedOpenRouter.llamaModel) migratedOpenRouter.glmModel = migratedOpenRouter.llamaModel
     const migratedPricing = { ...(parsed.pricing || {}) }
     if (migratedPricing.glm === undefined && migratedPricing.llama !== undefined) migratedPricing.glm = migratedPricing.llama
-    const merged = {
+    const merged = normalizeClaudeSettingsShape({
       ...DEFAULT_SETTINGS, ...parsed,
       app: { ...DEFAULT_SETTINGS.app, ...(parsed.app || {}) },
       openrouter: { ...DEFAULT_SETTINGS.openrouter, ...migratedOpenRouter },
@@ -192,7 +213,7 @@ function loadStoredSettings() {
       glm: { ...DEFAULT_SETTINGS.glm, ...migratedGlm },
       // Pricing: DEFAULT_SETTINGS hodnoty mají přednost — přebíjí staré uložené hodnoty
       pricing: { ...migratedPricing, ...DEFAULT_SETTINGS.pricing },
-    }
+    })
     if (!merged.openrouter.apiKey) merged.openrouter.apiKey = DEFAULT_SETTINGS.openrouter.apiKey
     if (!merged.openrouter.baseUrl) merged.openrouter.baseUrl = DEFAULT_SETTINGS.openrouter.baseUrl
     if (merged.openrouter.useForAll === undefined) merged.openrouter.useForAll = DEFAULT_SETTINGS.openrouter.useForAll

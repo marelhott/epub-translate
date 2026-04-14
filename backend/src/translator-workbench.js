@@ -964,7 +964,7 @@ function resolveOpenRouterConfig(settings = {}) {
         : String(process.env.OPENROUTER_USE_FOR_ALL || 'true') !== 'false',
     openaiModel: settings?.openrouter?.openaiModel || process.env.OPENROUTER_OPENAI_MODEL || 'openai/gpt-5.4',
     claudeModel:
-      settings?.openrouter?.claudeModel || process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4-6',
+      settings?.openrouter?.claudeModel || process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4.6',
     googleModel:
       settings?.openrouter?.googleModel || process.env.OPENROUTER_GOOGLE_MODEL || 'google/gemini-2.5-pro',
     glmModel:

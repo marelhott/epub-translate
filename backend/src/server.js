@@ -335,7 +335,7 @@ function buildSettingsBootstrap() {
       baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       useForAll: String(process.env.OPENROUTER_USE_FOR_ALL || 'true') !== 'false',
       openaiModel: process.env.OPENROUTER_OPENAI_MODEL || 'openai/gpt-5.4',
-      claudeModel: process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4-6',
+      claudeModel: process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4.6',
       googleModel: process.env.OPENROUTER_GOOGLE_MODEL || 'google/gemini-2.5-pro',
       glmModel: process.env.OPENROUTER_GLM_MODEL || 'z-ai/glm-5',
     },
@@ -401,8 +401,23 @@ async function diagnoseProviders(settings = {}) {
     }
   }
 
+  function canonicalOpenRouterModelId(modelId) {
+    const value = String(modelId || '').trim()
+    if (!value) return ''
+    const aliasMap = new Map([
+      ['anthropic/claude-sonnet-4-6', 'anthropic/claude-sonnet-4.6'],
+      ['claude-sonnet-4-6', 'anthropic/claude-sonnet-4.6'],
+      ['claude-sonnet-4.6', 'anthropic/claude-sonnet-4.6'],
+    ])
+    return aliasMap.get(value) || value
+  }
+
   function openrouterModelReady(modelId) {
-    return Boolean(modelId) && openrouterModels.includes(modelId)
+    const canonical = canonicalOpenRouterModelId(modelId)
+    if (!canonical) return false
+    if (openrouterModels.includes(canonical)) return true
+    const legacyDashVariant = canonical.replace(/claude-sonnet-4\.6\b/, 'claude-sonnet-4-6')
+    return legacyDashVariant !== canonical && openrouterModels.includes(legacyDashVariant)
   }
 
   const deeplApiKey = settings?.deepl?.apiKey || process.env.DEEPL_API_KEY || ''
@@ -483,10 +498,11 @@ async function diagnoseProviders(settings = {}) {
   }
 
   if (settings?.openrouter?.useForAll && openrouterKey) {
-    const model = settings?.openrouter?.claudeModel || 'anthropic/claude-sonnet-4-6'
+    const model = settings?.openrouter?.claudeModel || 'anthropic/claude-sonnet-4.6'
+    const canonicalModel = canonicalOpenRouterModelId(model)
     diagnostics.claude = openrouterModelReady(model)
-      ? { status: 'ready', label: 'Ready', detail: `${model} online přes OpenRouter.` }
-      : { status: 'unavailable', label: 'Model offline', detail: `${model} není dostupný v OpenRouteru.` }
+      ? { status: 'ready', label: 'Ready', detail: `${canonicalModel} online přes OpenRouter.` }
+      : { status: 'unavailable', label: 'Model offline', detail: `${canonicalModel} není dostupný v OpenRouteru.` }
   } else {
   const claudeKey = settings?.claude?.apiKey || process.env.ANTHROPIC_API_KEY || ''
   if (!claudeKey) {
