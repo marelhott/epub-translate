@@ -696,6 +696,39 @@ async function readPackage(zip, packagePath) {
   return xmlParser.parse(content)?.package
 }
 
+async function readPackageXml(zip, packagePath) {
+  const content = await zip.file(packagePath)?.async('string')
+  if (!content) {
+    throw new Error('Nepodařilo se otevřít OPF balíček.')
+  }
+
+  return content
+}
+
+function updateOpfLanguage(packageXml, targetLanguage) {
+  const source = String(packageXml || '')
+  const normalizedTarget = String(targetLanguage || 'cs').trim()
+  if (!source.trim() || !normalizedTarget) {
+    return source
+  }
+
+  if (/<dc:language\b[^>]*>[\s\S]*?<\/dc:language>/i.test(source)) {
+    return source.replace(
+      /<dc:language\b([^>]*)>[\s\S]*?<\/dc:language>/i,
+      `<dc:language$1>${escapeHtml(normalizedTarget)}</dc:language>`
+    )
+  }
+
+  if (/<metadata\b[^>]*>/i.test(source)) {
+    return source.replace(
+      /<\/metadata>/i,
+      `  <dc:language>${escapeHtml(normalizedTarget)}</dc:language>\n</metadata>`
+    )
+  }
+
+  return source
+}
+
 function findManifestByHref(pkg, targetHref) {
   return toArray(pkg.manifest?.item).find((item) => item.href === targetHref || item.href === targetHref.split('/').pop())
 }
@@ -1656,6 +1689,7 @@ export async function importTranslatedHtmlToEpub(payload) {
   const zip = await JSZip.loadAsync(buffer)
   const packagePath = await readContainer(zip)
   const pkg = await readPackage(zip, packagePath)
+  const packageXml = await readPackageXml(zip, packagePath)
   const translatedDoc = cheerio.load(normalizedTranslatedHtml)
 
   const sectionNodes = translatedDoc('[data-ebook-id]')
@@ -1692,17 +1726,7 @@ export async function importTranslatedHtmlToEpub(payload) {
     importedCount += 1
   }
 
-  if (pkg.metadata) {
-    const langVal = pkg.metadata.language
-    if (Array.isArray(langVal)) {
-      pkg.metadata.language = [targetLanguage, ...langVal.slice(1)]
-    } else if (langVal !== null && typeof langVal === 'object') {
-      pkg.metadata.language = { ...langVal, '#text': targetLanguage }
-    } else {
-      pkg.metadata.language = targetLanguage
-    }
-  }
-  zip.file(packagePath, xmlBuilder.build({ package: pkg }))
+  zip.file(packagePath, updateOpfLanguage(packageXml, targetLanguage))
 
   const orderedZip = new JSZip()
   orderedZip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
@@ -2713,6 +2737,7 @@ export async function exportTranslatedEpub(payload) {
   const zip = await JSZip.loadAsync(buffer)
   const packagePath = await readContainer(zip)
   const pkg = await readPackage(zip, packagePath)
+  const packageXml = await readPackageXml(zip, packagePath)
   const sectionMap = buildSectionMap(sections)
   const includedSections = sections.filter((section) => section.includeInTranslation)
   const includedIds = includedSections.map((section) => section.id)
@@ -2888,18 +2913,6 @@ export async function exportTranslatedEpub(payload) {
     launchNext()
   }
 
-  // Update dc:language to target language so Kindle shows correct language metadata
-  if (pkg.metadata) {
-    const langVal = pkg.metadata.language
-    if (Array.isArray(langVal)) {
-      pkg.metadata.language = [targetLanguage, ...langVal.slice(1)]
-    } else if (langVal !== null && typeof langVal === 'object') {
-      pkg.metadata.language = { ...langVal, '#text': targetLanguage }
-    } else {
-      pkg.metadata.language = targetLanguage
-    }
-  }
-
   // Prune NAV/NCX to only include selected sections; remove non-selected section files
   const manifestItems = toArray(pkg.manifest?.item)
   for (const item of manifestItems) {
@@ -2928,7 +2941,7 @@ export async function exportTranslatedEpub(payload) {
   }
 
   // Don't prune the spine — keep original book structure intact
-  zip.file(packagePath, xmlBuilder.build({ package: pkg }))
+  zip.file(packagePath, updateOpfLanguage(packageXml, targetLanguage))
 
   // Rebuild ZIP with mimetype as the first, uncompressed entry (EPUB 3 spec requirement)
   const orderedZip = new JSZip()
