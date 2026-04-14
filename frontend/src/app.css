@@ -1368,109 +1368,98 @@
 }
 
 .wb-btn--accent {
-  background: rgba(245, 242, 239, 0.8);
+  background: #ffffff;
   color: var(--text);
-  border-color: rgba(0,0,0,0.04);
   font-weight: 600;
-  box-shadow: rgba(78,50,23,0.04) 0px 6px 16px;
+  box-shadow: rgba(0,0,0,0.05) 0 5px 12px;
 }
 
 .wb-btn--accent:hover:not(:disabled) {
-  background: rgba(245, 242, 239, 0.96);
+  background: rgba(245,242,239,0.8);
   color: var(--text);
-  border-color: rgba(0,0,0,0.06);
 }
 
 .wb-btn--preview {
-  background: rgba(197, 109, 31, 0.16);
-  border-color: rgba(197, 109, 31, 0.24);
-  color: #8c4f14;
+  background: #ffffff;
+  color: var(--text);
   font-weight: 650;
-  box-shadow: rgba(197,109,31,0.06) 0px 6px 16px;
+  box-shadow: rgba(0,0,0,0.05) 0 5px 12px;
 }
 
 .wb-btn--preview:hover:not(:disabled) {
-  background: rgba(197, 109, 31, 0.22);
-  border-color: rgba(197, 109, 31, 0.32);
-  color: #7a450f;
+  background: rgba(245,242,239,0.8);
+  color: var(--text);
 }
 
 .wb-btn--translate {
-  background: rgba(37, 99, 235, 0.14);
-  border-color: rgba(37, 99, 235, 0.22);
-  color: #2450b8;
+  background: #ffffff;
+  color: var(--text);
   font-weight: 650;
-  box-shadow: rgba(37,99,235,0.06) 0px 6px 16px;
+  box-shadow: rgba(0,0,0,0.05) 0 5px 12px;
 }
 
 .wb-btn--translate:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.2);
-  border-color: rgba(37, 99, 235, 0.3);
-  color: #1f46a1;
+  background: rgba(245,242,239,0.8);
+  color: var(--text);
 }
 
 .wb-btn--html {
-  border-radius: 12px;
+  border-radius: 6px;
   height: 42px;
   justify-content: center;
-  background: rgba(18, 135, 114, 0.12);
-  border-color: rgba(18, 135, 114, 0.24);
-  color: #146e5c;
+  background: #ffffff;
+  color: var(--text);
   font-weight: 650;
 }
 
 .wb-btn--html-import {
-  border-radius: 12px;
+  border-radius: 6px;
   height: 42px;
   justify-content: center;
-  background: rgba(18, 135, 114, 0.06);
-  border-color: rgba(18, 135, 114, 0.18);
-  color: #146e5c;
+  background: #ffffff;
+  color: var(--text);
   font-weight: 600;
 }
 
 .wb-btn--review-claude,
 .wb-btn--review-openai {
-  border-radius: 12px;
+  border-radius: 6px;
   height: 44px;
   justify-content: center;
   font-weight: 700;
+  background: #ffffff;
+  color: var(--text);
 }
 
 .wb-btn--review-claude {
-  background: rgba(114, 74, 222, 0.12);
-  border-color: rgba(114, 74, 222, 0.22);
-  color: #5b3cb5;
+  background: #ffffff;
+  color: var(--text);
 }
 
 .wb-btn--review-openai {
-  background: rgba(16, 92, 168, 0.1);
-  border-color: rgba(16, 92, 168, 0.2);
-  color: #195998;
+  background: #ffffff;
+  color: var(--text);
 }
 
 .wb-btn--package {
-  border-radius: 12px;
+  border-radius: 6px;
   height: 42px;
   justify-content: center;
-  background: rgba(111, 66, 193, 0.12);
-  border-color: rgba(111, 66, 193, 0.22);
-  color: #6f42c1;
+  background: #ffffff;
+  color: var(--text);
   font-weight: 650;
 }
 
 .wb-btn--download {
-  background: rgba(35, 111, 85, 0.14);
-  border-color: rgba(35, 111, 85, 0.22);
-  color: #236f55;
+  background: var(--accent);
+  color: #ffffff;
   font-weight: 650;
-  box-shadow: rgba(35,111,85,0.06) 0px 6px 16px;
+  box-shadow: rgba(18,135,114,0.22) 0 6px 16px;
 }
 
 .wb-btn--download:hover:not(:disabled) {
-  background: rgba(35, 111, 85, 0.2);
-  border-color: rgba(35, 111, 85, 0.3);
-  color: #1f604b;
+  background: #0f7666;
+  color: #ffffff;
 }
 
 .wb-btn--preview:disabled,
