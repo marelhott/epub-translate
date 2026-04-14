@@ -2028,25 +2028,6 @@ export default function App() {
 
               <div className="wb-action-divider" />
 
-              <div className="wb-action-group wb-action-group--final">
-                <div className="wb-action-group-head">Finální EPUB</div>
-                <button
-                  className="wb-btn wb-btn--package"
-                  disabled={!importedHtmlMeta || !Object.keys(reviewResults).length}
-                  onClick={packageReviewedHtml}
-                >
-                  Zabalit zpět do EPUB
-                </button>
-                <button
-                  className="wb-btn wb-btn--download"
-                  disabled={!translatedBlob}
-                  onClick={downloadTranslatedBook}
-                >
-                  Stáhnout EPUB
-                </button>
-              </div>
-            </div>
-
             {jobs.length ? (
               <div className="wb-job-history">
                 <div className="wb-job-history-head">
@@ -2087,6 +2068,54 @@ export default function App() {
                 </div>
               </div>
             ) : null}
+            </div>
+
+            <div className="wb-actions-footer">
+              <div className="wb-action-group wb-action-group--final">
+                <div className="wb-action-group-head">Finální EPUB</div>
+                <button
+                  className="wb-btn wb-btn--package"
+                  disabled={!importedHtmlMeta || !Object.keys(reviewResults).length}
+                  onClick={packageReviewedHtml}
+                >
+                  Zabalit zpět do EPUB
+                </button>
+                <button
+                  className="wb-btn wb-btn--download"
+                  disabled={!translatedBlob}
+                  onClick={downloadTranslatedBook}
+                >
+                  Stáhnout EPUB
+                </button>
+              </div>
+            </div>
+          </aside>
+
+          <aside className="wb-sidebar-r2">
+            <div className="wb-pane-head">
+              <span className="wb-pane-label">
+                Sekce
+                <span className="wb-pane-label-count">
+                  {analysis?.sections?.length ? `${includedSections.length}/${analysis.sections.length}` : '0'}
+                </span>
+              </span>
+            </div>
+            <div className="wb-section-list">
+              {analysis?.sections?.map((section) => (
+                <label
+                  key={section.id}
+                  className={`wb-section-row ${section.includeInTranslation ? 'is-active' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={section.includeInTranslation}
+                    onChange={() => toggleSection(section.id)}
+                  />
+                  <span className="wb-section-name" title={section.title}>{section.title}</span>
+                  <span className="wb-section-words">{formatNumber(section.stats?.wordCount || 0)}</span>
+                </label>
+              ))}
+            </div>
 
             {/* Filters */}
             <div className="wb-pane-head">
@@ -2180,33 +2209,6 @@ export default function App() {
 
             {/* Error inline */}
             {error ? <div className="wb-error-inline">{error}</div> : null}
-
-            {/* Section list */}
-            <div className="wb-pane-head">
-              <span className="wb-pane-label">
-                Sekce
-                <span className="wb-pane-label-count">
-                  {analysis?.sections?.length ? `${includedSections.length}/${analysis.sections.length}` : '0'}
-                </span>
-              </span>
-            </div>
-            <div className="wb-section-list">
-              {analysis?.sections?.map((section) => (
-                <label
-                  key={section.id}
-                  className={`wb-section-row ${section.includeInTranslation ? 'is-active' : ''}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={section.includeInTranslation}
-                    onChange={() => toggleSection(section.id)}
-                  />
-                  <span className="wb-section-name" title={section.title}>{section.title}</span>
-                  <span className="wb-section-words">{formatNumber(section.stats?.wordCount || 0)}</span>
-                </label>
-              ))}
-            </div>
-
           </aside>
         </div>
 

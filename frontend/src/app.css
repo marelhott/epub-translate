@@ -170,11 +170,11 @@
 ════════════════════════════════════════════════════════ */
 .wb-workspace {
   display: grid;
-  grid-template-columns: var(--sidebar-l) 1fr var(--sidebar-r);
+  grid-template-columns: var(--sidebar-l) minmax(0, 1fr) var(--sidebar-r) 320px;
   flex: 1;
   min-height: 0;
   overflow: auto;
-  min-width: 760px;
+  min-width: 1080px;
 }
 
 /* ════════════════════════════════════════════════════════
@@ -198,6 +198,16 @@
   background: rgba(255,255,255,0.78);
   min-width: var(--sidebar-r);
   max-width: var(--sidebar-r);
+}
+
+.wb-sidebar-r2 {
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: rgba(255,255,255,0.78);
+  min-width: 320px;
+  max-width: 320px;
 }
 
 .wb-center {
@@ -1116,7 +1126,6 @@
 
 .wb-actions {
   padding: 12px;
-  border-bottom: 1px solid var(--border-soft);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1124,6 +1133,13 @@
   min-height: 0;
   overflow-y: auto;
   background: transparent;
+}
+
+.wb-actions-footer {
+  border-top: 1px solid var(--border-soft);
+  padding: 12px;
+  background: rgba(255,255,255,0.9);
+  flex-shrink: 0;
 }
 
 .wb-action-group {
@@ -1312,14 +1328,9 @@
 }
 
 .wb-action-group--final {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  background: rgba(255,255,255,0.95);
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-  padding: 10px;
-  box-shadow: rgba(0,0,0,0.05) 0 -8px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* Buttons */
