@@ -955,16 +955,13 @@ function settingsFingerprint(settings = {}, provider = '') {
 }
 
 function resolveOpenRouterConfig(settings = {}) {
-  const fallbackApiKey =
+  const rawApiKey =
     settings?.openrouter?.apiKey ||
-    settings?.claude?.apiKey ||
-    settings?.openai?.apiKey ||
-    settings?.google?.accessToken ||
-    settings?.glm?.apiKey ||
     process.env.OPENROUTER_API_KEY ||
     ''
+  const apiKey = typeof rawApiKey === 'string' ? rawApiKey.trim() : ''
   return {
-    apiKey: fallbackApiKey,
+    apiKey,
     baseUrl: settings?.openrouter?.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
     useForAll:
       settings?.openrouter?.useForAll !== undefined
@@ -1063,10 +1060,13 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
 
   if (!response.ok) {
     const body = await response.text().catch(() => '')
+    const keyPrefix = openrouter.apiKey ? openrouter.apiKey.slice(0, 7) : ''
     console.error('[openrouter]', {
       provider,
       status: response.status,
       hasAuthHeader: Boolean(openrouter.apiKey),
+      keyPrefix,
+      keyLength: openrouter.apiKey?.length || 0,
       model,
       usedBaseUrl: String(openrouter.baseUrl).replace(/\/$/, ''),
     })
@@ -2076,9 +2076,10 @@ async function translateWithOpenAI({ text, sourceLanguage, targetLanguage, forma
   if (shouldUseOpenRouter('openai', settings)) {
     return translateWithOpenRouter({ provider: 'openai', text, sourceLanguage, targetLanguage, format, settings, systemPrompt })
   }
-  const apiKey = settings?.openai?.apiKey || process.env.OPENAI_API_KEY
+  const rawKey = settings?.openai?.apiKey || process.env.OPENAI_API_KEY || ''
+  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : ''
   if (!apiKey) {
-    throw new Error('Chybí OPENAI_API_KEY')
+    throw new Error('Chybí OPENAI_API_KEY nebo OPENROUTER_API_KEY pro GPT.')
   }
 
   const response = await fetch('https://api.openai.com/v1/responses', {
@@ -2209,9 +2210,10 @@ async function translateWithClaude({ text, sourceLanguage, targetLanguage, forma
   if (shouldUseOpenRouter('claude', settings)) {
     return translateWithOpenRouter({ provider: 'claude', text, sourceLanguage, targetLanguage, format, settings, systemPrompt })
   }
-  const apiKey = settings?.claude?.apiKey || process.env.ANTHROPIC_API_KEY
+  const rawKey = settings?.claude?.apiKey || process.env.ANTHROPIC_API_KEY || ''
+  const apiKey = typeof rawKey === 'string' ? rawKey.trim() : ''
   if (!apiKey) {
-    throw new Error('Chybí ANTHROPIC_API_KEY')
+    throw new Error('Chybí ANTHROPIC_API_KEY nebo OPENROUTER_API_KEY pro Claude Sonnet.')
   }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
