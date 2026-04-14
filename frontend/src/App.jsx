@@ -221,8 +221,13 @@ const API_BASE_URL =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL
     ? String(import.meta.env.VITE_API_BASE_URL).replace(/\/$/, '')
     : '')
+const HOSTED_LOCAL_BACKEND_FALLBACK = 'http://localhost:4317'
 function apiUrl(path) {
-  return API_BASE_URL ? `${API_BASE_URL}${path}` : path
+  if (API_BASE_URL) return `${API_BASE_URL}${path}`
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')) {
+    return `${HOSTED_LOCAL_BACKEND_FALLBACK}${path}`
+  }
+  return path
 }
 async function parseJsonSafely(response) {
   const text = await response.text()
@@ -1616,7 +1621,7 @@ export default function App() {
                 <div className="wb-action-group-head">LLM kontrola překladu</div>
                 {isHostedFrontend ? (
                   <div className="wb-storage-warning wb-storage-warning--inline">
-                    Pro dlouhé LLM operace je stabilnější lokální backend. Frontend na Vercelu je v pohodě, ale backend připoj přes <strong>VITE_API_BASE_URL</strong>.
+                    Frontend běží na Vercelu, backend hledám na <strong>{API_BASE_URL || HOSTED_LOCAL_BACKEND_FALLBACK}</strong>. Pro dlouhé LLM operace nech backend běžet lokálně.
                   </div>
                 ) : null}
                 <button
