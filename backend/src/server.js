@@ -227,6 +227,7 @@ async function publicJob(job) {
     completedAt: job.completedAt,
     error: job.error || '',
     outputFileName: job.outputFileName || '',
+    audit: job.audit || null,
     checkpoint: checkpoint
       ? {
           completedSections: Object.keys(checkpoint.sections || {}).length,
@@ -773,6 +774,8 @@ async function processReviewJob(jobId) {
           processedSections: 0,
           totalSections: job.sections?.filter((section) => section.includeInTranslation).length || 0,
           changedSections: 0,
+          findingsCount: 0,
+          autoAppliedCount: 0,
           currentSectionId: '',
           currentSectionTitle: '',
           percent: 0,
@@ -813,6 +816,8 @@ async function processReviewJob(jobId) {
           processedSections: result.stats.processedSections,
           totalSections: result.stats.totalSections,
           changedSections: result.stats.changedSections,
+          findingsCount: result.stats.findingsCount || 0,
+          autoAppliedCount: result.stats.autoAppliedCount || 0,
           currentSectionId: '',
           currentSectionTitle: '',
           percent: 100,
@@ -821,9 +826,12 @@ async function processReviewJob(jobId) {
           ...(job.summary || {}),
           changedSections: result.stats.changedSections,
           reviewedSections: result.stats.processedSections,
+          findingsCount: result.stats.findingsCount || 0,
+          autoAppliedCount: result.stats.autoAppliedCount || 0,
           title: result.stats.title,
           author: result.stats.author,
         },
+        audit: result.audit || null,
       })
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -1056,6 +1064,8 @@ app.post('/api/html-review', async (req, res) => {
         processedSections: 0,
         totalSections: payload.sections?.filter((section) => section.includeInTranslation).length || 0,
         changedSections: 0,
+        findingsCount: 0,
+        autoAppliedCount: 0,
         currentSectionId: '',
         currentSectionTitle: '',
         percent: 0,

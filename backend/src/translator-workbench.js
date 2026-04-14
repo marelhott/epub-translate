@@ -370,6 +370,25 @@ function extractReviewedHtmlFragment(raw, fallbackHtml) {
   return candidate
 }
 
+function extractJsonObject(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return null
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = fenced?.[1]?.trim() || text
+  try {
+    return JSON.parse(candidate)
+  } catch {
+    const start = candidate.indexOf('{')
+    const end = candidate.lastIndexOf('}')
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
+        return JSON.parse(candidate.slice(start, end + 1))
+      } catch {}
+    }
+  }
+  return null
+}
+
 async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtml, title, settings }) {
   const reviewer =
     provider === 'claude'
@@ -407,6 +426,80 @@ async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtm
   )
 
   return extractReviewedHtmlFragment(response, translatedHtml)
+}
+
+async function auditHtmlBlocksWithLlm({ provider, sectionTitle, blocks, settings }) {
+  const reviewer =
+    provider === 'claude'
+      ? translateWithClaude
+      : provider === 'openai'
+        ? translateWithOpenAI
+        : null
+
+  if (!reviewer) {
+    throw new Error(`Provider ${provider} nepodporuje audit překladu HTML.`)
+  }
+
+  const systemPrompt =
+    'You are a strict translation auditor for Czech non-fiction book content. ' +
+    'You compare original English blocks with an existing Czech translation. ' +
+    'Default to NO_CHANGE. Only flag a block if there is a clear issue: untranslated English, meaning drift, factual distortion, broken Czech grammar, bad gender agreement, inconsistent terminology, or visibly broken markup. ' +
+    'Do NOT rewrite for style. Do NOT optimize tone. Do NOT make optional improvements. ' +
+    'When a change is truly necessary, return a minimal corrected Czech HTML fragment for that one block only, preserving inline tags and attributes already present in the Czech fragment. ' +
+    'Return JSON only in the shape {"findings":[{"index":number,"issueType":string,"severity":"low|medium|high","confidence":number,"reason":string,"suggestedHtml":string}]}. ' +
+    'If nothing needs changing, return {"findings":[]}.'
+
+  const raw = await withRetry(
+    () =>
+      reviewer({
+        text: JSON.stringify({
+          sectionTitle,
+          blocks: blocks.map((block) => ({
+            index: block.index,
+            tagName: block.tagName,
+            originalText: block.originalPlainText,
+            translatedText: block.translatedPlainText,
+            translatedHtml: block.translatedSource,
+          })),
+        }),
+        sourceLanguage: 'en',
+        targetLanguage: 'cs',
+        format: 'text',
+        settings,
+        systemPrompt,
+      }),
+    { retries: 2, initialDelayMs: 900, label: `${provider} html audit` }
+  )
+
+  const parsed = extractJsonObject(raw)
+  const findings = Array.isArray(parsed?.findings) ? parsed.findings : []
+  return findings
+    .map((item) => ({
+      index: Number(item?.index),
+      issueType: normalizeText(item?.issueType || 'quality'),
+      severity: ['low', 'medium', 'high'].includes(item?.severity) ? item.severity : 'medium',
+      confidence: Math.max(0, Math.min(1, Number(item?.confidence || 0))),
+      reason: normalizeText(item?.reason || ''),
+      suggestedHtml: String(item?.suggestedHtml || '').trim(),
+    }))
+    .filter((item) => Number.isInteger(item.index) && item.index >= 0 && item.reason)
+}
+
+function shouldAutoApplyAuditFinding(finding, originalBlock) {
+  if (!finding?.suggestedHtml?.trim()) return false
+  if (!looksLikeValidTranslatedFragment(originalBlock?.translatedSource || '', finding.suggestedHtml)) return false
+  if (finding.confidence < 0.92) return false
+  return ['high', 'medium'].includes(finding.severity)
+}
+
+function summarizeAudit(findings) {
+  const byType = {}
+  let autoApplicable = 0
+  for (const finding of findings) {
+    byType[finding.issueType] = (byType[finding.issueType] || 0) + 1
+    if (finding.autoApplied) autoApplicable += 1
+  }
+  return { byType, autoApplicable }
 }
 
 function extractBodyText(html) {
@@ -1783,8 +1876,11 @@ export async function reviewTranslatedHtml(payload) {
   const targetIds = [...originalSections.keys()].filter((id) => translatedSections.has(id))
   let processedSections = 0
   let changedSections = 0
+  let findingsCount = 0
+  let autoAppliedCount = 0
   let currentSectionTitle = ''
   let currentSectionId = ''
+  const sectionAudits = []
 
   const reportProgress = async (stage) => {
     if (!onProgress) return
@@ -1795,6 +1891,8 @@ export async function reviewTranslatedHtml(payload) {
       currentSectionId,
       currentSectionTitle,
       changedSections,
+      findingsCount,
+      autoAppliedCount,
       percent: targetIds.length
         ? Number(((processedSections / targetIds.length) * 100).toFixed(2))
         : 100,
@@ -1824,29 +1922,83 @@ export async function reviewTranslatedHtml(payload) {
       currentSectionTitle = translatedSection.title || sourceSection.title || sectionId
       await reportProgress('reviewing-html-section')
 
-      let reviewedHtml = ''
+      const originalBlocks = getTranslatableNodePayloads(sourceSection.bodyHtml)
+      const translatedBlocks = getTranslatableNodePayloads(translatedSection.bodyHtml)
+      const comparableLength = Math.min(originalBlocks.length, translatedBlocks.length)
+      const auditBlocks = Array.from({ length: comparableLength }, (_unused, blockIndex) => ({
+        index: blockIndex,
+        tagName: translatedBlocks[blockIndex]?.tagName || originalBlocks[blockIndex]?.tagName || 'p',
+        originalPlainText: originalBlocks[blockIndex]?.plainText || '',
+        translatedPlainText: translatedBlocks[blockIndex]?.plainText || '',
+        translatedSource: translatedBlocks[blockIndex]?.source || '',
+      })).filter((block) => block.originalPlainText && block.translatedPlainText)
+
+      let findings = []
       try {
-        reviewedHtml = await reviewHtmlFragmentWithLlm({
-          provider,
-          originalHtml: sourceSection.bodyHtml,
-          translatedHtml: translatedSection.bodyHtml,
-          title: currentSectionTitle,
-          settings,
-        })
+        const chunkSize = 8
+        for (let start = 0; start < auditBlocks.length; start += chunkSize) {
+          const batch = auditBlocks.slice(start, start + chunkSize)
+          const batchFindings = await auditHtmlBlocksWithLlm({
+            provider,
+            sectionTitle: currentSectionTitle,
+            blocks: batch,
+            settings,
+          })
+          findings.push(...batchFindings)
+        }
       } catch (error) {
         console.error(
-          `[reviewTranslatedHtml] section ${sectionId} failed, keeping original translation:`,
+          `[reviewTranslatedHtml] section ${sectionId} audit failed, keeping original translation:`,
           error instanceof Error ? error.message : error
         )
-        reviewedHtml = ''
+        findings = []
       }
 
-      const normalizedReviewed = normalizeImportedHtmlArtifacts(reviewedHtml).trim()
-      if (normalizedReviewed && normalizedReviewed !== translatedSection.bodyHtml.trim()) {
-        changedSections += 1
-        const sectionNode = reviewedDoc(`[data-ebook-id="${sectionId}"]`).first()
-        sectionNode.find('.ebook-section-body').first().html(normalizedReviewed)
+      findings = findings
+        .map((finding) => {
+          const block = auditBlocks[finding.index]
+          const autoApplied = shouldAutoApplyAuditFinding(finding, block)
+          return {
+            ...finding,
+            autoApplied,
+            originalText: block?.originalPlainText || '',
+            translatedText: block?.translatedPlainText || '',
+          }
+        })
+        .filter((finding) => auditBlocks[finding.index])
+
+      findingsCount += findings.length
+      autoAppliedCount += findings.filter((finding) => finding.autoApplied).length
+
+      let nextSectionHtml = translatedSection.bodyHtml
+      const appliedPayloads = [...translatedBlocks]
+      let sectionChanged = false
+      for (const finding of findings) {
+        if (!finding.autoApplied) continue
+        const current = appliedPayloads[finding.index]
+        if (!current) continue
+        appliedPayloads[finding.index] = {
+          ...current,
+          source: finding.suggestedHtml,
+          plainText: normalizeText(cheerio.load(`<body>${finding.suggestedHtml}</body>`, { xmlMode: true })('body').text()),
+        }
+        sectionChanged = true
       }
+
+      if (sectionChanged) {
+        nextSectionHtml = applyTranslationsToHtml(translatedSection.bodyHtml, appliedPayloads.map((item) => item.source))
+        const sectionNode = reviewedDoc(`[data-ebook-id="${sectionId}"]`).first()
+        sectionNode.find('.ebook-section-body').first().html(nextSectionHtml)
+        changedSections += 1
+      }
+
+      sectionAudits.push({
+        sectionId,
+        title: currentSectionTitle,
+        findingCount: findings.length,
+        autoAppliedCount: findings.filter((finding) => finding.autoApplied).length,
+        findings: findings.slice(0, 20),
+      })
 
       processedSections += 1
       await reportProgress('reviewing-html')
@@ -1865,8 +2017,14 @@ export async function reviewTranslatedHtml(payload) {
       totalSections: targetIds.length,
       processedSections,
       changedSections,
+      findingsCount,
+      autoAppliedCount,
       title,
       author,
+    },
+    audit: {
+      sections: sectionAudits,
+      summary: summarizeAudit(sectionAudits.flatMap((section) => section.findings)),
     },
   }
 }

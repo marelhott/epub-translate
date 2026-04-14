@@ -271,12 +271,29 @@ function stageLabel(stage) {
   if (stage === 'preparing-export') return 'příprava sekcí'
   if (stage === 'resuming-export') return 'obnova checkpointu'
   if (stage === 'translating') return 'překládání'
-  if (stage === 'reviewing-html') return 'kontrola sekcí'
-  if (stage === 'reviewing-html-section') return 'kontroluju sekci'
+  if (stage === 'reviewing-html') return 'audit sekcí'
+  if (stage === 'reviewing-html-section') return 'audituju sekci'
   if (stage === 'completed') return 'dokončeno'
   if (stage === 'interrupted') return 'přerušeno'
   if (stage === 'queued') return 've frontě'
   return stage || '—'
+}
+
+function auditIssueLabel(issueType) {
+  if (issueType === 'meaning_drift') return 'význam'
+  if (issueType === 'untranslated_text') return 'nepřeloženo'
+  if (issueType === 'czech_awkwardness') return 'čeština'
+  if (issueType === 'terminology') return 'terminologie'
+  if (issueType === 'entity') return 'jméno / entita'
+  if (issueType === 'markup') return 'značky'
+  return issueType || 'jiné'
+}
+
+function auditSeverityLabel(severity) {
+  if (severity === 'high') return 'vysoká'
+  if (severity === 'medium') return 'střední'
+  if (severity === 'low') return 'nízká'
+  return severity || '—'
 }
 function estimateCostEur(characters, ratePerMillionChars) {
   return (Number(characters || 0) / 1_000_000) * Number(ratePerMillionChars || 0)
@@ -851,11 +868,11 @@ export default function App() {
             [payload.provider]: payload,
           }))
           setSelectedReviewProvider(payload.provider)
-          setStatusText(`LLM kontrola přes ${providerVersion(payload.provider)} je hotová.`)
+          setStatusText(`Audit překladu přes ${providerVersion(payload.provider)} je hotový.`)
         }
         if (payload.status === 'failed') {
-          setError(payload?.error || 'LLM kontrola selhala.')
-          setStatusText('LLM kontrola selhala.')
+          setError(payload?.error || 'Audit překladu selhal.')
+          setStatusText('Audit překladu selhal.')
         }
       } catch {
         reviewPollingRef.current.failures += 1
@@ -923,6 +940,21 @@ export default function App() {
     if (!reviewJob?.startedAt) return 0
     return Math.max(0.02, (Date.now() - new Date(reviewJob.startedAt).getTime()) / 60000)
   }, [reviewJob])
+
+  const selectedAuditResult = selectedReviewProvider ? reviewResults[selectedReviewProvider] : null
+  const selectedAuditFindings = useMemo(() => {
+    const sections = selectedAuditResult?.audit?.sections || []
+    return sections
+      .flatMap((section) =>
+        (section.findings || []).map((finding, index) => ({
+          ...finding,
+          _sectionId: section.sectionId,
+          _sectionTitle: section.title,
+          _findingKey: `${section.sectionId || 'section'}-${finding.index ?? index}-${index}`,
+        }))
+      )
+      .slice(0, 8)
+  }, [selectedAuditResult])
 
 
   function updateSettings(section, field, value) {
@@ -1279,7 +1311,7 @@ export default function App() {
       setExportMeta(null)
       setReviewJob(null)
       setReviewResults({})
-      setStatusText('HTML import hotový. Spusť LLM kontrolu přes Sonnet nebo GPT.')
+      setStatusText('HTML import hotový. Spusť audit překladu přes Sonnet nebo GPT.')
     } catch (importError) {
       setError(importError.message)
       setStatusText('Import HTML selhal.')
@@ -1288,14 +1320,14 @@ export default function App() {
 
   async function startHtmlReview(provider) {
     if (!analysis?.sessionId || !importedHtmlMeta) return
-    if (!requireBackend('LLM kontrolu')) return
+    if (!requireBackend('audit překladu')) return
     if (reviewJob?.status === 'processing' || reviewJob?.status === 'queued') {
-      setError('LLM kontrola už právě běží.')
+      setError('Audit překladu už právě běží.')
       return
     }
     setError('')
     setSelectedReviewProvider(provider)
-    setStatusText(`Spouštím LLM kontrolu přes ${providerVersion(provider)}…`)
+    setStatusText(`Spouštím audit překladu přes ${providerVersion(provider)}…`)
     try {
       const response = await fetch(apiUrl('/api/html-review', runtimeApiBaseUrl), {
         method: 'POST',
@@ -1311,11 +1343,11 @@ export default function App() {
         }),
       })
       const payload = await parseJsonSafely(response)
-      if (!response.ok) throw new Error(payload?.detail || payload?.error || 'LLM kontrola selhala.')
+      if (!response.ok) throw new Error(payload?.detail || payload?.error || 'Audit překladu selhal.')
       setReviewJob(payload)
     } catch (reviewError) {
       setError(reviewError.message)
-      setStatusText('LLM kontrolu se nepodařilo spustit.')
+      setStatusText('Audit překladu se nepodařilo spustit.')
     }
   }
 
@@ -1687,7 +1719,7 @@ export default function App() {
                 <div className="wb-progress wb-progress--review">
                   <div className="wb-progress-head">
                     <div>
-                      <div className="wb-progress-label">Probíhá LLM kontrola</div>
+                      <div className="wb-progress-label">Probíhá audit překladu</div>
                       <div className="wb-progress-title">
                         {reviewJob?.provider === 'claude' ? 'Claude Sonnet 4.6' : 'OpenAI GPT-5.4'}
                       </div>
@@ -1705,7 +1737,7 @@ export default function App() {
                   </div>
                   <div className="wb-progress-grid">
                     <div className="wb-progress-cell">
-                      <span className="wb-progress-cell-val is-accent">kontrola překladu</span>
+                      <span className="wb-progress-cell-val is-accent">audit + safe opravy</span>
                       <span className="wb-progress-cell-lbl">režim</span>
                     </div>
                     <div className="wb-progress-cell">
@@ -1714,7 +1746,15 @@ export default function App() {
                     </div>
                     <div className="wb-progress-cell">
                       <span className="wb-progress-cell-val">{reviewJob?.progress?.changedSections || 0}</span>
-                      <span className="wb-progress-cell-lbl">upravených sekcí</span>
+                      <span className="wb-progress-cell-lbl">sekcí se změnou</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{reviewJob?.progress?.findingsCount || 0}</span>
+                      <span className="wb-progress-cell-lbl">nalezených míst</span>
+                    </div>
+                    <div className="wb-progress-cell">
+                      <span className="wb-progress-cell-val">{reviewJob?.progress?.autoAppliedCount || 0}</span>
+                      <span className="wb-progress-cell-lbl">safe oprav</span>
                     </div>
                     <div className="wb-progress-cell">
                       <span className="wb-progress-cell-val">{reviewRuntimeMinutes.toFixed(1)}m</span>
@@ -1724,7 +1764,7 @@ export default function App() {
                   <div className="wb-progress-current">
                     {reviewJob?.progress?.currentSectionTitle
                       ? `→ ${reviewJob.progress.currentSectionTitle}`
-                      : 'Kontroluju další sekci…'}
+                      : 'Audituju další sekci…'}
                   </div>
                 </div>
               )}
@@ -1800,20 +1840,20 @@ export default function App() {
               </div>
 
               <div className="wb-action-group wb-action-group--review">
-                <div className="wb-action-group-head">LLM kontrola překladu</div>
+                <div className="wb-action-group-head">Audit překladu</div>
                 <button
                   className="wb-btn wb-btn--review-claude"
                   disabled={!importedHtmlMeta || reviewJob?.status === 'processing'}
                   onClick={() => startHtmlReview('claude')}
                 >
-                  Kontrola Sonnet 4.6
+                  Audit Sonnet 4.6
                 </button>
                 <button
                   className="wb-btn wb-btn--review-openai"
                   disabled={!importedHtmlMeta || reviewJob?.status === 'processing'}
                   onClick={() => startHtmlReview('openai')}
                 >
-                  Kontrola GPT-5.4
+                  Audit GPT-5.4
                 </button>
                 {Object.keys(reviewResults).length ? (
                   <div className="wb-review-results">
@@ -1823,13 +1863,34 @@ export default function App() {
                         className={`wb-review-chip ${selectedReviewProvider === item.provider ? 'is-active' : ''}`}
                         onClick={() => setSelectedReviewProvider(item.provider)}
                       >
-                        {providerVersion(item.provider)} · {item.summary?.changedSections || 0} úprav
+                        {providerVersion(item.provider)} · {item.summary?.findingsCount || 0} nálezů · {item.summary?.autoAppliedCount || 0} safe
                       </button>
                     ))}
                   </div>
                 ) : (
-                  <div className="wb-action-note">Kontrola porovnává originální anglický HTML a český import po sekcích.</div>
+                  <div className="wb-action-note">Audit porovnává originální anglický HTML s českým importem, najde problémová místa a automaticky použije jen vysoce jisté lokální opravy.</div>
                 )}
+                {selectedAuditResult ? (
+                  <div className="wb-action-note">
+                    {selectedAuditResult.summary?.findingsCount || 0} nálezů, {selectedAuditResult.summary?.autoAppliedCount || 0} bezpečně použitých oprav, {selectedAuditResult.summary?.changedSections || 0} sekcí se změnou.
+                  </div>
+                ) : null}
+                {selectedAuditFindings.length ? (
+                  <div className="wb-review-findings">
+                    {selectedAuditFindings.map((finding) => (
+                      <div key={finding._findingKey} className="wb-review-finding">
+                        <div className="wb-review-finding-head">
+                          <span>{finding._sectionTitle || finding._sectionId}</span>
+                          <span>{auditIssueLabel(finding.issueType)} · {auditSeverityLabel(finding.severity)} · {Math.round(Number(finding.confidence || 0) * 100)}%</span>
+                        </div>
+                        <div className="wb-review-finding-body">{finding.reason}</div>
+                        {finding.autoApplied ? (
+                          <div className="wb-review-finding-note">Bezpečná oprava byla použita automaticky.</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="wb-action-divider" />
