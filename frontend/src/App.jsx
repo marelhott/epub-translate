@@ -921,7 +921,11 @@ export default function App() {
       persistSettings(settings)
       setSettingsSavedAt(new Date().toLocaleTimeString('cs-CZ'))
       setSettingsSaveError('')
-      await refreshDiagnostics(settings)
+      try {
+        await refreshDiagnostics(settings)
+      } catch (error) {
+        setSettingsSaveError(error.message || 'Nastavení je uložené, ale diagnostika se nepodařila.')
+      }
       if (closeAfter) setIsSettingsOpen(false)
     } catch (error) { setSettingsSaveError(error.message || 'Uložení selhalo.') }
   }
@@ -937,6 +941,11 @@ export default function App() {
       const payload = await parseJsonSafely(response)
       if (response.ok) setDiagnostics(payload)
       else throw new Error(payload?.detail || payload?.error || 'Diagnostika selhala.')
+    } catch (error) {
+      if (error?.message === 'Failed to fetch') {
+        throw new Error('Backend nebo síť není dostupná. Zkontroluj Backend URL a běžící backend.')
+      }
+      throw error
     } finally { setDiagnosticsLoading(false) }
   }
 
