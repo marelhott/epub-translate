@@ -1061,16 +1061,19 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
   if (!response.ok) {
     const body = await response.text().catch(() => '')
     const keyPrefix = openrouter.apiKey ? openrouter.apiKey.slice(0, 7) : ''
+    const keyLength = openrouter.apiKey?.length || 0
     console.error('[openrouter]', {
       provider,
       status: response.status,
       hasAuthHeader: Boolean(openrouter.apiKey),
       keyPrefix,
-      keyLength: openrouter.apiKey?.length || 0,
+      keyLength,
       model,
       usedBaseUrl: String(openrouter.baseUrl).replace(/\/$/, ''),
     })
-    throw new Error(`OpenRouter request failed: ${response.status} ${body.slice(0, 200)}`)
+    throw new Error(
+      `OpenRouter request failed: ${response.status} ${body.slice(0, 200)} [keyPrefix=${keyPrefix || '∅'}, keyLen=${keyLength}, model=${model}]`
+    )
   }
 
   const payload = await response.json()

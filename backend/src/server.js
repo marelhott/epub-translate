@@ -738,6 +738,20 @@ async function processReviewJob(jobId) {
     if (!job) return
 
     try {
+      const mergedSettings = mergeRuntimeSettings(job)
+      const describeKey = (value) => {
+        const v = typeof value === 'string' ? value.trim() : ''
+        return { len: v.length, prefix: v.slice(0, 7) }
+      }
+      console.error(`[processReviewJob] ${jobId} starting`, {
+        provider: job.provider,
+        openrouter: describeKey(mergedSettings?.openrouter?.apiKey),
+        claude: describeKey(mergedSettings?.claude?.apiKey),
+        openai: describeKey(mergedSettings?.openai?.apiKey),
+        useForAll: Boolean(mergedSettings?.openrouter?.useForAll),
+        envOpenRouter: Boolean((process.env.OPENROUTER_API_KEY || '').trim()),
+      })
+
       const originalHtml = await readSessionArtifact(job.sessionId, 'original')
       const translatedHtml = await readSessionArtifact(job.sessionId, 'translated')
       if (!originalHtml.trim()) {
@@ -872,6 +886,12 @@ app.get('/api/health', (_req, res) => {
     now: new Date().toISOString(),
     durableStorage: 'local-filesystem',
     storageMode: 'local-runtime',
+    commit:
+      process.env.RAILWAY_GIT_COMMIT_SHA ||
+      process.env.GIT_COMMIT ||
+      process.env.SOURCE_COMMIT ||
+      'unknown',
+    hasOpenRouterEnv: Boolean((process.env.OPENROUTER_API_KEY || '').trim()),
   })
 })
 
