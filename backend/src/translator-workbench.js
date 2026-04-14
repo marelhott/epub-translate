@@ -1759,55 +1759,78 @@ export async function reviewTranslatedHtml(payload) {
   const targetIds = [...originalSections.keys()].filter((id) => translatedSections.has(id))
   let processedSections = 0
   let changedSections = 0
+  let currentSectionTitle = ''
+  let currentSectionId = ''
 
-  for (const sectionId of targetIds) {
-    const sourceSection = originalSections.get(sectionId)
-    const translatedSection = translatedSections.get(sectionId)
-    if (!sourceSection?.bodyHtml?.trim() || !translatedSection?.bodyHtml?.trim()) {
-      processedSections += 1
-      continue
-    }
-
-    if (onProgress) {
-      await onProgress({
-        stage: 'reviewing-html-section',
-        processedSections,
-        totalSections: targetIds.length,
-        currentSectionId: sectionId,
-        currentSectionTitle: translatedSection.title || sourceSection.title || sectionId,
-        changedSections,
-        percent: targetIds.length ? Number((((processedSections + 0.35) / targetIds.length) * 100).toFixed(2)) : 100,
-      })
-    }
-
-    const reviewedHtml = await reviewHtmlFragmentWithLlm({
-      provider,
-      originalHtml: sourceSection.bodyHtml,
-      translatedHtml: translatedSection.bodyHtml,
-      title: translatedSection.title || sourceSection.title || sectionId,
-      settings,
+  const reportProgress = async (stage) => {
+    if (!onProgress) return
+    await onProgress({
+      stage,
+      processedSections,
+      totalSections: targetIds.length,
+      currentSectionId,
+      currentSectionTitle,
+      changedSections,
+      percent: targetIds.length
+        ? Number(((processedSections / targetIds.length) * 100).toFixed(2))
+        : 100,
     })
+  }
 
-    const normalizedReviewed = normalizeImportedHtmlArtifacts(reviewedHtml).trim()
-    if (normalizedReviewed && normalizedReviewed !== translatedSection.bodyHtml.trim()) {
-      changedSections += 1
-      const sectionNode = reviewedDoc(`[data-ebook-id="${sectionId}"]`).first()
-      sectionNode.find('.ebook-section-body').first().html(normalizedReviewed)
-    }
+  const CONCURRENCY = Math.max(1, Math.min(4, targetIds.length))
+  let cursor = 0
 
-    processedSections += 1
-    if (onProgress) {
-      await onProgress({
-        stage: 'reviewing-html',
-        processedSections,
-        totalSections: targetIds.length,
-        currentSectionId: sectionId,
-        currentSectionTitle: translatedSection.title || sourceSection.title || sectionId,
-        changedSections,
-        percent: targetIds.length ? Number(((processedSections / targetIds.length) * 100).toFixed(2)) : 100,
-      })
+  const worker = async () => {
+    while (true) {
+      const index = cursor
+      cursor += 1
+      if (index >= targetIds.length) return
+      const sectionId = targetIds[index]
+      const sourceSection = originalSections.get(sectionId)
+      const translatedSection = translatedSections.get(sectionId)
+      if (!sourceSection?.bodyHtml?.trim() || !translatedSection?.bodyHtml?.trim()) {
+        processedSections += 1
+        currentSectionId = sectionId
+        currentSectionTitle = translatedSection?.title || sourceSection?.title || sectionId
+        await reportProgress('reviewing-html')
+        continue
+      }
+
+      currentSectionId = sectionId
+      currentSectionTitle = translatedSection.title || sourceSection.title || sectionId
+      await reportProgress('reviewing-html-section')
+
+      let reviewedHtml = ''
+      try {
+        reviewedHtml = await reviewHtmlFragmentWithLlm({
+          provider,
+          originalHtml: sourceSection.bodyHtml,
+          translatedHtml: translatedSection.bodyHtml,
+          title: currentSectionTitle,
+          settings,
+        })
+      } catch (error) {
+        console.error(
+          `[reviewTranslatedHtml] section ${sectionId} failed, keeping original translation:`,
+          error instanceof Error ? error.message : error
+        )
+        reviewedHtml = ''
+      }
+
+      const normalizedReviewed = normalizeImportedHtmlArtifacts(reviewedHtml).trim()
+      if (normalizedReviewed && normalizedReviewed !== translatedSection.bodyHtml.trim()) {
+        changedSections += 1
+        const sectionNode = reviewedDoc(`[data-ebook-id="${sectionId}"]`).first()
+        sectionNode.find('.ebook-section-body').first().html(normalizedReviewed)
+      }
+
+      processedSections += 1
+      await reportProgress('reviewing-html')
     }
   }
+
+  const workers = Array.from({ length: CONCURRENCY }, () => worker())
+  await Promise.all(workers)
 
   const title = normalizeText(originalDoc('.ebook-title').first().text())
   const author = normalizeText(originalDoc('.ebook-author').first().text())
