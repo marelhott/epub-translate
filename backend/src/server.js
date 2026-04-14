@@ -280,13 +280,20 @@ async function readOutput(job) {
 
 function splitJobSettings(settings = {}) {
   const publicSettings = JSON.parse(JSON.stringify(settings || {}))
+  const sharedOpenRouterKey =
+    settings?.openrouter?.apiKey ||
+    settings?.claude?.apiKey ||
+    settings?.openai?.apiKey ||
+    settings?.google?.accessToken ||
+    settings?.glm?.apiKey ||
+    ''
   const secretSettings = {
-    openrouter: { apiKey: settings?.openrouter?.apiKey || '' },
+    openrouter: { apiKey: sharedOpenRouterKey },
     deepl: { apiKey: settings?.deepl?.apiKey || '' },
-    openai: { apiKey: settings?.openai?.apiKey || '' },
-    google: { accessToken: settings?.google?.accessToken || '' },
-    claude: { apiKey: settings?.claude?.apiKey || '' },
-    glm: { apiKey: settings?.glm?.apiKey || '' },
+    openai: { apiKey: settings?.openai?.apiKey || sharedOpenRouterKey },
+    google: { accessToken: settings?.google?.accessToken || sharedOpenRouterKey },
+    claude: { apiKey: settings?.claude?.apiKey || sharedOpenRouterKey },
+    glm: { apiKey: settings?.glm?.apiKey || sharedOpenRouterKey },
   }
 
   if (publicSettings.openrouter) {

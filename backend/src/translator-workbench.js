@@ -955,8 +955,16 @@ function settingsFingerprint(settings = {}, provider = '') {
 }
 
 function resolveOpenRouterConfig(settings = {}) {
+  const fallbackApiKey =
+    settings?.openrouter?.apiKey ||
+    settings?.claude?.apiKey ||
+    settings?.openai?.apiKey ||
+    settings?.google?.accessToken ||
+    settings?.glm?.apiKey ||
+    process.env.OPENROUTER_API_KEY ||
+    ''
   return {
-    apiKey: settings?.openrouter?.apiKey || process.env.OPENROUTER_API_KEY || '',
+    apiKey: fallbackApiKey,
     baseUrl: settings?.openrouter?.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
     useForAll:
       settings?.openrouter?.useForAll !== undefined
@@ -1055,6 +1063,13 @@ async function translateWithOpenRouter({ provider, text, sourceLanguage, targetL
 
   if (!response.ok) {
     const body = await response.text().catch(() => '')
+    console.error('[openrouter]', {
+      provider,
+      status: response.status,
+      hasAuthHeader: Boolean(openrouter.apiKey),
+      model,
+      usedBaseUrl: String(openrouter.baseUrl).replace(/\/$/, ''),
+    })
     throw new Error(`OpenRouter request failed: ${response.status} ${body.slice(0, 200)}`)
   }
 
