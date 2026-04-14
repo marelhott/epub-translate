@@ -849,9 +849,22 @@ export default function App() {
     })
   }
 
+  function requireBackend(actionLabel) {
+    if (!hostedFrontendMissingBackend) return true
+    const detail = actionLabel
+      ? `Pro ${actionLabel} nejdřív nastav Backend URL v nastavení.`
+      : 'Nejdřív nastav Backend URL v nastavení.'
+    setError(detail)
+    setStatusText('Backend není nastavený.')
+    setIsSettingsOpen(true)
+    return false
+  }
+
   async function handleFileUpload(event) {
     const file = event.target.files?.[0]
+    event.target.value = ''
     if (!file) return
+    if (!requireBackend('načtení EPUBu')) return
     setOriginalBookData(null); setTranslatedBookData(null); setTranslatedBlob(null)
     setPreview(null); setJob(null); setExportMeta(null); setError('')
     setImportedHtmlMeta(null); setReviewJob(null); setReviewResults({})
@@ -897,6 +910,7 @@ export default function App() {
 
   async function runPreviewTranslation() {
     if (!analysis?.sections?.length || !includedSections.length || !originalBookData) return
+    if (!requireBackend('překlad preview')) return
     previewAbortRef.current?.abort()
     const controller = new AbortController()
     previewAbortRef.current = controller
@@ -935,6 +949,7 @@ export default function App() {
 
   async function startTranslation() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
+    if (!requireBackend('plný překlad')) return
     // Prevent duplicate jobs — if a job is already running, ignore
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
@@ -970,6 +985,7 @@ export default function App() {
 
   async function startTranslationWithCheckpoint(idbEntry) {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData || !idbEntry?.sections) return
+    if (!requireBackend('obnovení překladu')) return
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
       return
@@ -1006,6 +1022,7 @@ export default function App() {
 
   async function resumeTranslation(targetJob) {
     if (!targetJob?.id) return
+    if (!requireBackend('obnovení překladu')) return
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
       return
@@ -1049,6 +1066,7 @@ export default function App() {
 
   async function downloadExternalHtml() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
+    if (!requireBackend('HTML export')) return
     setError('')
     setStatusText('Připravuju HTML export…')
     try {
@@ -1091,6 +1109,7 @@ export default function App() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file || !analysis?.sessionId || !originalBookData) return
+    if (!requireBackend('import HTML')) return
     setError('')
     setStatusText('Nahrávám přeložené HTML pro budoucí LLM kontrolu…')
     try {
@@ -1128,6 +1147,7 @@ export default function App() {
 
   async function startHtmlReview(provider) {
     if (!analysis?.sessionId || !importedHtmlMeta) return
+    if (!requireBackend('LLM kontrolu')) return
     if (reviewJob?.status === 'processing' || reviewJob?.status === 'queued') {
       setError('LLM kontrola už právě běží.')
       return
@@ -1160,6 +1180,7 @@ export default function App() {
 
   async function packageReviewedHtml() {
     if (!analysis?.sessionId || !importedHtmlMeta) return
+    if (!requireBackend('zabalení EPUBu')) return
     setError('')
     setStatusText('Balím zkontrolované HTML zpět do EPUB…')
     try {
@@ -1274,7 +1295,7 @@ export default function App() {
                   {analysis ? analysis.fileName : 'Vybrat EPUB'}
                 </span>
                 <span className="wb-upload-hint">.epub</span>
-                <input type="file" accept=".epub,application/epub+zip" onChange={handleFileUpload} disabled={hostedFrontendMissingBackend} />
+                <input type="file" accept=".epub,application/epub+zip" onChange={handleFileUpload} />
               </label>
               <input
                 ref={htmlImportInputRef}
