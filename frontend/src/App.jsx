@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { ReaderPane } from './components/ReaderPane'
 import './app.css'
 
-// ── IndexedDB: browser-side checkpoint persistence (survives Vercel redeploys) ──
+// ── IndexedDB: browser-side checkpoint persistence ──
 const IDB_NAME = 'epub-translator'
 const IDB_VERSION = 1
 const IDB_STORE = 'checkpoints'
@@ -270,10 +270,6 @@ function sanitizeSettings(settings) {
     glm: { ...settings.glm },
   }
 }
-const ENV_API_BASE_URL =
-  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL
-    ? String(import.meta.env.VITE_API_BASE_URL).replace(/\/$/, '')
-    : '')
 function apiUrl(path, apiBaseUrl = '') {
   return apiBaseUrl ? `${apiBaseUrl}${path}` : path
 }
@@ -417,7 +413,7 @@ function SettingsModal({ open, settings, savedAt, diagnostics, diagnosticsLoadin
                 <input type="text" value={settings.app.backendUrl} onChange={(e) => onChange('app', 'backendUrl', e.target.value)} placeholder="https://backend.example.com" />
               </div>
               <div className="wb-checkbox-hint" style={{ marginBottom: 12 }}>
-                Na Vercelu nastav URL backendu sem nebo přes <code>VITE_API_BASE_URL</code>. Pro lokální běh nech prázdné.
+                Pro lokální běh se používá <code>http://localhost:4317</code>. V nasazení nech prázdné pro stejnou doménu, nebo sem zadej veřejnou URL backendu.
               </div>
 
               <div className="wb-settings-col-title">OpenRouter</div>
@@ -652,15 +648,16 @@ export default function App() {
   const htmlImportInputRef = useRef(null)
   const reviewPollingRef = useRef({ jobId: '', failures: 0 })
   const [filters, setFilters] = useState({ includeMain: true, includeFront: false, includeBack: false, includeUnknown: false })
-  const isHostedFrontend = typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')
+  const isLocalBrowser =
+    typeof window !== 'undefined' &&
+    ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname || '')
   const runtimeApiBaseUrl = useMemo(() => {
     const explicit = String(settings.app?.backendUrl || '').trim().replace(/\/$/, '')
     if (explicit) return explicit
-    if (ENV_API_BASE_URL) return ENV_API_BASE_URL
     return ''
   }, [settings])
-  const hostedFrontendUsesLocalBackend = isHostedFrontend && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(runtimeApiBaseUrl)
-  const hostedFrontendMissingBackend = isHostedFrontend && !runtimeApiBaseUrl
+  const remoteAppUsesLocalBackend =
+    !isLocalBrowser && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(runtimeApiBaseUrl)
 
   useEffect(() => {
     async function loadProviders() {
@@ -668,17 +665,15 @@ export default function App() {
       const payload = await response.json()
       setProviders(payload)
     }
-    if (hostedFrontendMissingBackend) return
     loadProviders().catch(() => setProviders([]))
-  }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
+  }, [runtimeApiBaseUrl])
 
   useEffect(() => {
-    if (hostedFrontendMissingBackend) return
     fetch(apiUrl('/api/health', runtimeApiBaseUrl))
       .then((response) => parseJsonSafely(response))
       .then((payload) => setBackendHealth(payload))
       .catch(() => setBackendHealth(null))
-  }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
+  }, [runtimeApiBaseUrl])
 
   useEffect(() => {
     if (didPersistInitialSettingsRef.current) return
@@ -693,7 +688,6 @@ export default function App() {
   }, [settings])
 
   useEffect(() => {
-    if (hostedFrontendMissingBackend) return
     let cancelled = false
     async function bootstrapSettingsFromBackend() {
       try {
@@ -717,7 +711,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
+  }, [runtimeApiBaseUrl])
 
   useEffect(() => {
     if (!providers.length) return
@@ -726,14 +720,10 @@ export default function App() {
   }, [providers, settings])
 
   useEffect(() => {
-    if (hostedFrontendMissingBackend) {
-      setJobs([])
-      return undefined
-    }
     loadJobs().catch(() => {})
     const interval = window.setInterval(() => loadJobs().catch(() => {}), 5000)
     return () => window.clearInterval(interval)
-  }, [hostedFrontendMissingBackend, runtimeApiBaseUrl])
+  }, [runtimeApiBaseUrl])
 
   useEffect(() => {
     if (!analysis?.sections) return
@@ -944,8 +934,8 @@ export default function App() {
     setDiagnosticsLoading(true)
     try {
       const targetBaseUrl = String(nextSettings?.app?.backendUrl || runtimeApiBaseUrl || '').trim().replace(/\/$/, '')
-      if (isHostedFrontend && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(targetBaseUrl)) {
-        throw new Error('Frontend na Vercelu nevidí localhost backend. Použij lokální frontend, nebo nastav veřejnou HTTPS URL backendu.')
+      if (!isLocalBrowser && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(targetBaseUrl)) {
+        throw new Error('Nasazená aplikace nevidí localhost backend. Použij stejnou doménu, nebo nastav veřejnou HTTPS URL backendu.')
       }
       const response = await fetch(apiUrl('/api/providers/diagnostics', targetBaseUrl), {
         method: 'POST',
@@ -978,34 +968,23 @@ export default function App() {
   }
 
   function requireBackend(actionLabel) {
-    if (!hostedFrontendMissingBackend) return true
-    const detail = actionLabel
-      ? `Pro ${actionLabel} nejdřív nastav Backend URL v nastavení.`
-      : 'Nejdřív nastav Backend URL v nastavení.'
-    setError(detail)
-    setStatusText('Backend není nastavený.')
-    setIsSettingsOpen(true)
-    return false
-  }
-
-  function requireReachableBackend(actionLabel) {
-    if (hostedFrontendUsesLocalBackend) {
+    if (remoteAppUsesLocalBackend) {
       const detail = actionLabel
-        ? `Pro ${actionLabel} nemůže Vercel frontend použít localhost backend.`
-        : 'Vercel frontend nemůže použít localhost backend.'
+        ? `Pro ${actionLabel} nemůže nasazená aplikace použít localhost backend.`
+        : 'Nasazená aplikace nemůže použít localhost backend.'
       setError(detail)
-      setStatusText('Použij lokální frontend, nebo nastav veřejnou HTTPS URL backendu.')
+      setStatusText('Použij stejnou doménu, nebo nastav veřejnou HTTPS URL backendu.')
       setIsSettingsOpen(true)
       return false
     }
-    return requireBackend(actionLabel)
+    return true
   }
 
   async function handleFileUpload(event) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
-    if (!requireReachableBackend('načtení EPUBu')) return
+    if (!requireBackend('načtení EPUBu')) return
     setOriginalBookData(null); setTranslatedBookData(null); setTranslatedBlob(null)
     setPreview(null); setJob(null); setExportMeta(null); setError('')
     setImportedHtmlMeta(null); setReviewJob(null); setReviewResults({})
@@ -1051,7 +1030,7 @@ export default function App() {
 
   async function runPreviewTranslation() {
     if (!analysis?.sections?.length || !includedSections.length || !originalBookData) return
-    if (!requireReachableBackend('překlad preview')) return
+    if (!requireBackend('překlad preview')) return
     previewAbortRef.current?.abort()
     const controller = new AbortController()
     previewAbortRef.current = controller
@@ -1090,7 +1069,7 @@ export default function App() {
 
   async function startTranslation() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
-    if (!requireReachableBackend('plný překlad')) return
+    if (!requireBackend('plný překlad')) return
     // Prevent duplicate jobs — if a job is already running, ignore
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
@@ -1126,7 +1105,7 @@ export default function App() {
 
   async function startTranslationWithCheckpoint(idbEntry) {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData || !idbEntry?.sections) return
-    if (!requireReachableBackend('obnovení překladu')) return
+    if (!requireBackend('obnovení překladu')) return
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
       return
@@ -1163,7 +1142,7 @@ export default function App() {
 
   async function resumeTranslation(targetJob) {
     if (!targetJob?.id) return
-    if (!requireReachableBackend('obnovení překladu')) return
+    if (!requireBackend('obnovení překladu')) return
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
       return
@@ -1207,7 +1186,7 @@ export default function App() {
 
   async function downloadExternalHtml() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
-    if (!requireReachableBackend('HTML export')) return
+    if (!requireBackend('HTML export')) return
     setError('')
     setStatusText('Připravuju HTML export…')
     try {
@@ -1250,7 +1229,7 @@ export default function App() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file || !analysis?.sessionId || !originalBookData) return
-    if (!requireReachableBackend('import HTML')) return
+    if (!requireBackend('import HTML')) return
     setError('')
     setStatusText('Nahrávám přeložené HTML pro budoucí LLM kontrolu…')
     try {
@@ -1288,7 +1267,7 @@ export default function App() {
 
   async function startHtmlReview(provider) {
     if (!analysis?.sessionId || !importedHtmlMeta) return
-    if (!requireReachableBackend('LLM kontrolu')) return
+    if (!requireBackend('LLM kontrolu')) return
     if (reviewJob?.status === 'processing' || reviewJob?.status === 'queued') {
       setError('LLM kontrola už právě běží.')
       return
@@ -1321,7 +1300,7 @@ export default function App() {
 
   async function packageReviewedHtml() {
     if (!analysis?.sessionId || !importedHtmlMeta) return
-    if (!requireReachableBackend('zabalení EPUBu')) return
+    if (!requireBackend('zabalení EPUBu')) return
     setError('')
     setStatusText('Balím zkontrolované HTML zpět do EPUB…')
     try {

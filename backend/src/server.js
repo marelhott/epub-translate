@@ -4,7 +4,8 @@ import cors from 'cors'
 import multer from 'multer'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   analyzeEpubBuffer,
   buildExportPlan,
@@ -25,6 +26,10 @@ dotenv.config({ path: '.env.local' })
 dotenv.config()
 
 const app = express()
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const frontendDistDir = join(__dirname, '../../frontend/dist')
+const frontendIndexPath = join(frontendDistDir, 'index.html')
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024, fieldSize: 10 * 1024 * 1024 } })
 const activeJobs = new Map()
 const jobSecrets = new Map()
@@ -836,6 +841,9 @@ async function recoverJobs() {
 
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
+if (existsSync(frontendDistDir)) {
+  app.use(express.static(frontendDistDir))
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -1246,6 +1254,12 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
     })
   }
 })
+
+if (existsSync(frontendIndexPath)) {
+  app.get(/^(?!\/api(?:\/|$)).*/, (_req, res) => {
+    res.sendFile(frontendIndexPath)
+  })
+}
 
 const port = Number(process.env.PORT || 4317)
 

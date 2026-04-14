@@ -1604,7 +1604,7 @@ export async function exportEpubToHtml(payload) {
 
   const htmlBytes = Buffer.byteLength(html, 'utf8')
   if (htmlBytes > 4_200_000) {
-    throw new Error('HTML export je pro Vercel příliš velký. Zkus lokální backend nebo menší rozsah knihy.')
+    throw new Error('HTML export je pro nasazení příliš velký. Zkus menší rozsah knihy nebo lokální běh.')
   }
 
   return {
