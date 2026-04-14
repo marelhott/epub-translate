@@ -74,6 +74,9 @@ async function idbDeleteCheckpoint(jobId) {
 const SETTINGS_STORAGE_KEY = 'ebook-translator-settings-v1'
 
 const DEFAULT_SETTINGS = {
+  app: {
+    backendUrl: '',
+  },
   openrouter: {
     apiKey: '',
     baseUrl: 'https://openrouter.ai/api/v1',
@@ -131,6 +134,7 @@ function loadStoredSettings() {
     if (migratedPricing.glm === undefined && migratedPricing.llama !== undefined) migratedPricing.glm = migratedPricing.llama
     const merged = {
       ...DEFAULT_SETTINGS, ...parsed,
+      app: { ...DEFAULT_SETTINGS.app, ...(parsed.app || {}) },
       openrouter: { ...DEFAULT_SETTINGS.openrouter, ...migratedOpenRouter },
       deepl: { ...DEFAULT_SETTINGS.deepl, ...(parsed.deepl || {}) },
       openai: { ...DEFAULT_SETTINGS.openai, ...(parsed.openai || {}) },
@@ -217,17 +221,12 @@ function sanitizeSettings(settings) {
     glm: { ...settings.glm },
   }
 }
-const API_BASE_URL =
+const ENV_API_BASE_URL =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL
     ? String(import.meta.env.VITE_API_BASE_URL).replace(/\/$/, '')
     : '')
-const HOSTED_LOCAL_BACKEND_FALLBACK = 'http://localhost:4317'
-function apiUrl(path) {
-  if (API_BASE_URL) return `${API_BASE_URL}${path}`
-  if (typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')) {
-    return `${HOSTED_LOCAL_BACKEND_FALLBACK}${path}`
-  }
-  return path
+function apiUrl(path, apiBaseUrl = '') {
+  return apiBaseUrl ? `${apiBaseUrl}${path}` : path
 }
 async function parseJsonSafely(response) {
   const text = await response.text()
@@ -338,6 +337,15 @@ function SettingsModal({ open, settings, savedAt, diagnostics, diagnosticsLoadin
           <div className="wb-settings-grid">
             {/* OpenRouter */}
             <div className="wb-settings-col">
+              <div className="wb-settings-col-title">Aplikace</div>
+              <div className="wb-field">
+                <label className="wb-field-label">Backend URL</label>
+                <input type="text" value={settings.app.backendUrl} onChange={(e) => onChange('app', 'backendUrl', e.target.value)} placeholder="https://backend.example.com" />
+              </div>
+              <div className="wb-checkbox-hint" style={{ marginBottom: 12 }}>
+                Na Vercelu nastav URL backendu sem nebo přes <code>VITE_API_BASE_URL</code>. Pro lokální běh nech prázdné.
+              </div>
+
               <div className="wb-settings-col-title">OpenRouter</div>
               <div className="wb-field">
                 <label className="wb-field-label">API Key</label>
@@ -569,22 +577,32 @@ export default function App() {
   const htmlImportInputRef = useRef(null)
   const reviewPollingRef = useRef({ jobId: '', failures: 0 })
   const [filters, setFilters] = useState({ includeMain: true, includeFront: false, includeBack: false, includeUnknown: false })
+  const isHostedFrontend = typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')
+  const runtimeApiBaseUrl = useMemo(() => {
+    const explicit = String(settings.app?.backendUrl || '').trim().replace(/\/$/, '')
+    if (explicit) return explicit
+    if (ENV_API_BASE_URL) return ENV_API_BASE_URL
+    return ''
+  }, [settings])
+  const hostedFrontendMissingBackend = isHostedFrontend && !runtimeApiBaseUrl
 
   useEffect(() => {
     async function loadProviders() {
-      const response = await fetch(apiUrl('/api/providers'))
+      const response = await fetch(apiUrl('/api/providers', runtimeApiBaseUrl))
       const payload = await response.json()
       setProviders(payload)
     }
+    if (hostedFrontendMissingBackend) return
     loadProviders().catch(() => setProviders([]))
-  }, [])
+  }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
 
   useEffect(() => {
-    fetch(apiUrl('/api/health'))
+    if (hostedFrontendMissingBackend) return
+    fetch(apiUrl('/api/health', runtimeApiBaseUrl))
       .then((response) => parseJsonSafely(response))
       .then((payload) => setBackendHealth(payload))
       .catch(() => setBackendHealth(null))
-  }, [])
+  }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
 
   useEffect(() => {
     if (!providers.length) return
@@ -629,7 +647,7 @@ export default function App() {
 
     const interval = window.setInterval(async () => {
       try {
-        const response = await fetch(apiUrl(`/api/jobs/${job.id}`))
+        const response = await fetch(apiUrl(`/api/jobs/${job.id}`, runtimeApiBaseUrl))
         if (!response.ok) { pollingRef.current.failures += 1; return }
         const payload = await parseJsonSafely(response)
         if (!payload) { pollingRef.current.failures += 1; return }
@@ -641,7 +659,7 @@ export default function App() {
         const serverSections = payload.checkpoint?.completedSections || 0
         if (serverSections > 0 && serverSections > idbSectionsRef.current) {
           idbSectionsRef.current = serverSections
-          fetch(apiUrl(`/api/jobs/${payload.id}/checkpoint`))
+          fetch(apiUrl(`/api/jobs/${payload.id}/checkpoint`, runtimeApiBaseUrl))
             .then((r) => r.ok ? r.json() : null)
             .then((cp) => {
               if (cp?.sections) {
@@ -659,7 +677,7 @@ export default function App() {
           setStatusText('Překlad hotový.')
           setExportMeta({ fileName: payload.outputFileName, cacheHits: payload.progress?.cacheHits || 0, cacheMisses: payload.progress?.cacheMisses || 0 })
           idbDeleteCheckpoint(payload.id).catch(() => {})
-          const downloadResponse = await fetch(apiUrl(`/api/jobs/${payload.id}/download`))
+          const downloadResponse = await fetch(apiUrl(`/api/jobs/${payload.id}/download`, runtimeApiBaseUrl))
           if (!downloadResponse.ok) throw new Error('Nepodařilo se stáhnout výsledný EPUB.')
           const blob = await downloadResponse.blob()
           const bookData = await blob.arrayBuffer()
@@ -691,7 +709,7 @@ export default function App() {
 
     const interval = window.setInterval(async () => {
       try {
-        const response = await fetch(apiUrl(`/api/jobs/${reviewJob.id}`))
+        const response = await fetch(apiUrl(`/api/jobs/${reviewJob.id}`, runtimeApiBaseUrl))
         if (!response.ok) { reviewPollingRef.current.failures += 1; return }
         const payload = await parseJsonSafely(response)
         if (!payload) { reviewPollingRef.current.failures += 1; return }
@@ -776,7 +794,6 @@ export default function App() {
     return Math.max(0.02, (Date.now() - new Date(reviewJob.startedAt).getTime()) / 60000)
   }, [reviewJob])
 
-  const isHostedFrontend = typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')
 
   function updateSettings(section, field, value) {
     setSettings((cur) => ({ ...cur, [section]: { ...cur[section], [field]: value } }))
@@ -803,7 +820,7 @@ export default function App() {
   async function refreshDiagnostics(nextSettings = settings) {
     setDiagnosticsLoading(true)
     try {
-      const response = await fetch(apiUrl('/api/providers/diagnostics'), {
+      const response = await fetch(apiUrl('/api/providers/diagnostics', runtimeApiBaseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings: sanitizeSettings(nextSettings) }),
@@ -815,7 +832,7 @@ export default function App() {
   }
 
   async function loadJobs() {
-    const response = await fetch(apiUrl('/api/jobs'))
+    const response = await fetch(apiUrl('/api/jobs', runtimeApiBaseUrl))
     const payload = await parseJsonSafely(response)
     if (!response.ok || !Array.isArray(payload)) return
     const translationJobs = payload.filter((item) => (item.kind || 'translation') !== 'review')
@@ -841,7 +858,7 @@ export default function App() {
     formData.append('languageHint', 'en')
     try {
       const fileBuffer = await file.arrayBuffer()
-      const response = await fetch(apiUrl('/api/analyze'), { method: 'POST', body: formData })
+      const response = await fetch(apiUrl('/api/analyze', runtimeApiBaseUrl), { method: 'POST', body: formData })
       const payload = await parseJsonSafely(response)
       if (!response.ok) throw new Error(payload?.detail || payload?.error || `HTTP ${response.status}`)
       if (!payload) throw new Error('Server vrátil prázdnou odpověď.')
@@ -892,7 +909,7 @@ export default function App() {
         previewPageCount: 2,
         settings: sanitizeSettings(settings),
       }
-      const response = await fetch(apiUrl('/api/translate-preview'), {
+      const response = await fetch(apiUrl('/api/translate-preview', runtimeApiBaseUrl), {
         method: 'POST',
         body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
         signal: controller.signal,
@@ -933,7 +950,7 @@ export default function App() {
         analysisSummary: analysis.summary,
         settings: sanitizeSettings(settings),
       }
-      const response = await fetch(apiUrl('/api/jobs'), {
+      const response = await fetch(apiUrl('/api/jobs', runtimeApiBaseUrl), {
         method: 'POST',
         body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
       })
@@ -969,7 +986,7 @@ export default function App() {
         clientCheckpoint: { sections: idbEntry.sections, updatedAt: idbEntry.updatedAt },
       }
       setSelectedProvider(requestPayload.provider)
-      const response = await fetch(apiUrl('/api/jobs'), {
+      const response = await fetch(apiUrl('/api/jobs', runtimeApiBaseUrl), {
         method: 'POST',
         body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
       })
@@ -995,7 +1012,7 @@ export default function App() {
       const requestPayload = {
         settings: sanitizeSettings(settings),
       }
-      const response = await fetch(apiUrl(`/api/jobs/${targetJob.id}/resume`), {
+      const response = await fetch(apiUrl(`/api/jobs/${targetJob.id}/resume`, runtimeApiBaseUrl), {
         method: 'POST',
         body: buildEpubRequestPayload(
           requestPayload,
@@ -1039,7 +1056,7 @@ export default function App() {
         sections: analysis.sections,
         analysisSummary: analysis.summary,
       }
-      const response = await fetch(apiUrl('/api/export-html'), {
+      const response = await fetch(apiUrl('/api/export-html', runtimeApiBaseUrl), {
         method: 'POST',
         body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
       })
@@ -1083,7 +1100,7 @@ export default function App() {
         analysisSummary: analysis.summary,
       }))
       formData.append('file', file, file.name)
-      const response = await fetch(apiUrl('/api/import-html'), {
+      const response = await fetch(apiUrl('/api/import-html', runtimeApiBaseUrl), {
         method: 'POST',
         body: formData,
       })
@@ -1115,7 +1132,7 @@ export default function App() {
     setSelectedReviewProvider(provider)
     setStatusText(`Spouštím LLM kontrolu přes ${providerVersion(provider)}…`)
     try {
-      const response = await fetch(apiUrl('/api/html-review'), {
+      const response = await fetch(apiUrl('/api/html-review', runtimeApiBaseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1142,7 +1159,7 @@ export default function App() {
     setError('')
     setStatusText('Balím zkontrolované HTML zpět do EPUB…')
     try {
-      const response = await fetch(apiUrl('/api/package-html'), {
+      const response = await fetch(apiUrl('/api/package-html', runtimeApiBaseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1243,6 +1260,12 @@ export default function App() {
         {/* ─── WORKSPACE ──────────────────────────────── */}
         <div className="wb-workspace">
 
+          {hostedFrontendMissingBackend ? (
+            <div className="wb-storage-warning wb-storage-warning--standalone">
+              Frontend běží na Vercelu, ale backend URL není nastavená. Otevři nastavení a vyplň <strong>Backend URL</strong> na HTTPS backend, nebo používej celou appku lokálně přes <strong>npm run dev</strong>.
+            </div>
+          ) : null}
+
           {/* ── LEFT SIDEBAR ── */}
           <aside className="wb-sidebar-l">
 
@@ -1254,7 +1277,7 @@ export default function App() {
                   {analysis ? analysis.fileName : 'Vybrat EPUB'}
                 </span>
                 <span className="wb-upload-hint">.epub</span>
-                <input type="file" accept=".epub,application/epub+zip" onChange={handleFileUpload} />
+                <input type="file" accept=".epub,application/epub+zip" onChange={handleFileUpload} disabled={hostedFrontendMissingBackend} />
               </label>
               <input
                 ref={htmlImportInputRef}
