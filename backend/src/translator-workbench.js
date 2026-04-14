@@ -2,8 +2,10 @@ import JSZip from 'jszip'
 import { XMLBuilder, XMLParser } from 'fast-xml-parser'
 import * as cheerio from 'cheerio'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -337,6 +339,44 @@ function injectBodyInnerHtml(originalHtml, bodyInnerHtml) {
     return source.replace(/(<body[^>]*>)([\s\S]*?)(<\/body>)/i, `$1${bodyInnerHtml}$3`)
   }
   return bodyInnerHtml
+}
+
+function normalizeXhtmlFragment(fragment, containerTag = 'div') {
+  const wrapped = `<${containerTag}>${String(fragment || '').trim()}</${containerTag}>`
+  const $ = cheerio.load(wrapped, { decodeEntities: false })
+  return $.xml($(containerTag).contents())
+}
+
+function normalizeXhtmlDocument(html, targetLanguage = '') {
+  const source = String(html || '')
+  if (!source.trim()) {
+    return source
+  }
+  const $ = cheerio.load(source, { decodeEntities: false })
+  if (targetLanguage) {
+    $('html').attr('xml:lang', targetLanguage)
+    $('html').attr('lang', targetLanguage)
+    $('body').attr('xml:lang', targetLanguage)
+    $('body').attr('lang', targetLanguage)
+  }
+  return $.xml().replace(/&(?!#?[a-z0-9]+;)/gi, '&amp;')
+}
+
+function validateXhtmlDocument(html, label = 'document') {
+  try {
+    const tempDir = mkdtempSync(join(tmpdir(), 'epub-xhtml-'))
+    const filePath = join(tempDir, `${label.replace(/[^a-z0-9._-]+/gi, '_')}.xhtml`)
+    const wrapped = String(html || '').startsWith('<?xml')
+      ? String(html || '')
+      : `<?xml version="1.0" encoding="utf-8"?>\n${String(html || '')}`
+    writeFileSync(filePath, wrapped, 'utf-8')
+    execFileSync('xmllint', ['--noout', filePath], { stdio: 'pipe' })
+    rmSync(tempDir, { recursive: true, force: true })
+    return true
+  } catch (error) {
+    const detail = String(error?.stderr || error?.message || '').trim()
+    throw new Error(`XHTML validace selhala pro ${label}: ${detail}`)
+  }
 }
 
 export function normalizeImportedHtmlArtifacts(html) {
@@ -805,21 +845,25 @@ function updateOpfLanguage(packageXml, targetLanguage) {
     return source
   }
 
-  if (/<dc:language\b[^>]*>[\s\S]*?<\/dc:language>/i.test(source)) {
-    return source.replace(
+  let next = source
+  next = next.replace(/(<package\b[^>]*\bxml:lang=")([^"]*)(")/i, `$1${escapeHtml(normalizedTarget)}$3`)
+  next = next.replace(/(<package\b(?![^>]*\bxml:lang=)[^>]*)(>)/i, `$1 xml:lang="${escapeHtml(normalizedTarget)}"$2`)
+
+  if (/<dc:language\b[^>]*>[\s\S]*?<\/dc:language>/i.test(next)) {
+    return next.replace(
       /<dc:language\b([^>]*)>[\s\S]*?<\/dc:language>/i,
       `<dc:language$1>${escapeHtml(normalizedTarget)}</dc:language>`
     )
   }
 
-  if (/<metadata\b[^>]*>/i.test(source)) {
-    return source.replace(
+  if (/<metadata\b[^>]*>/i.test(next)) {
+    return next.replace(
       /<\/metadata>/i,
       `  <dc:language>${escapeHtml(normalizedTarget)}</dc:language>\n</metadata>`
     )
   }
 
-  return source
+  return next
 }
 
 function findManifestByHref(pkg, targetHref) {
@@ -1815,7 +1859,12 @@ export async function importTranslatedHtmlToEpub(payload) {
       continue
     }
     const originalHtml = await file.async('string')
-    zip.file(section.href, injectBodyInnerHtml(originalHtml, translatedBody))
+    const normalizedSectionHtml = normalizeXhtmlDocument(
+      injectBodyInnerHtml(originalHtml, translatedBody),
+      targetLanguage
+    )
+    validateXhtmlDocument(normalizedSectionHtml, section.href)
+    zip.file(section.href, normalizedSectionHtml)
     importedCount += 1
   }
 
@@ -2049,6 +2098,69 @@ export async function reviewTranslatedHtml(payload) {
     audit: {
       sections: sectionAudits,
       summary: summarizeAudit(sectionAudits.flatMap((section) => section.findings)),
+    },
+  }
+}
+
+export async function repairPackagedEpub(payload) {
+  const {
+    buffer,
+    fileName = 'book.epub',
+    targetLanguage = 'cs',
+  } = payload || {}
+
+  if (!buffer) {
+    throw new Error('Chybí EPUB buffer pro opravu.')
+  }
+
+  const zip = await JSZip.loadAsync(buffer)
+  const packagePath = await readContainer(zip)
+  const pkg = await readPackage(zip, packagePath)
+  const packageXml = await readPackageXml(zip, packagePath)
+  const manifestItems = toArray(pkg.manifest?.item).map((item) => ({
+    ...item,
+    href: resolvePath(packagePath, item.href),
+  }))
+
+  let repairedFiles = 0
+  for (const item of manifestItems) {
+    const mediaType = item['media-type'] || ''
+    if (!/html|xhtml/i.test(mediaType)) {
+      continue
+    }
+    const file = zip.file(item.href)
+    if (!file) {
+      continue
+    }
+    const html = await file.async('string')
+    const repaired = normalizeXhtmlDocument(html, targetLanguage)
+    validateXhtmlDocument(repaired, item.href)
+    zip.file(item.href, repaired)
+    repairedFiles += 1
+  }
+
+  zip.file(packagePath, updateOpfLanguage(packageXml, targetLanguage))
+
+  const orderedZip = new JSZip()
+  orderedZip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
+  for (const [name, zipEntry] of Object.entries(zip.files)) {
+    if (name === 'mimetype' || zipEntry.dir) continue
+    const content = await zipEntry.async('nodebuffer')
+    orderedZip.file(name, content)
+  }
+
+  const rebuilt = await orderedZip.generateAsync({
+    type: 'nodebuffer',
+    mimeType: 'application/epub+zip',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  })
+
+  return {
+    buffer: rebuilt,
+    fileName: buildOutputFileName(pkg.metadata, fileName, targetLanguage),
+    stats: {
+      repairedFiles,
     },
   }
 }
@@ -2980,7 +3092,9 @@ export async function exportTranslatedEpub(payload) {
   for (const task of sectionTasks) {
     const savedSection = checkpointSections[task.section.id]
     if (savedSection?.translatedHtml) {
-      zip.file(task.section.href, savedSection.translatedHtml)
+      const restoredHtml = normalizeXhtmlDocument(savedSection.translatedHtml, targetLanguage)
+      validateXhtmlDocument(restoredHtml, task.section.href)
+      zip.file(task.section.href, restoredHtml)
       processedBlocks += savedSection.processedBlocks || task.texts.length
       processedWords += savedSection.processedWords || task.section.wordCount || task.section.stats?.wordCount || 0
       cacheHits += savedSection.cacheHits || 0
@@ -3052,7 +3166,9 @@ export async function exportTranslatedEpub(payload) {
     cacheMisses += translationBatch.cacheMisses
     processedBlocks += texts.length
     processedWords += section.wordCount || section.stats?.wordCount || 0
-    zip.file(section.href, nextHtml)
+    const normalizedSectionHtml = normalizeXhtmlDocument(nextHtml, targetLanguage)
+    validateXhtmlDocument(normalizedSectionHtml, section.href)
+    zip.file(section.href, normalizedSectionHtml)
 
     if (onCheckpoint) {
       await onCheckpoint({
@@ -3062,7 +3178,7 @@ export async function exportTranslatedEpub(payload) {
           id: section.id,
           href: section.href,
           title: section.title,
-          translatedHtml: nextHtml,
+          translatedHtml: normalizedSectionHtml,
           processedBlocks: texts.length,
           processedWords: section.wordCount || section.stats?.wordCount || 0,
           cacheHits: translationBatch.cacheHits,
