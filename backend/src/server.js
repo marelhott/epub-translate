@@ -319,6 +319,55 @@ function mergeRuntimeSettings(job) {
   }
 }
 
+function buildSettingsBootstrap() {
+  const deeplApiKey = process.env.DEEPL_API_KEY || ''
+  return {
+    app: {
+      backendUrl: '',
+    },
+    openrouter: {
+      apiKey: process.env.OPENROUTER_API_KEY || '',
+      baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+      useForAll: String(process.env.OPENROUTER_USE_FOR_ALL || 'true') !== 'false',
+      openaiModel: process.env.OPENROUTER_OPENAI_MODEL || 'openai/gpt-5.4',
+      claudeModel: process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4-6',
+      googleModel: process.env.OPENROUTER_GOOGLE_MODEL || 'google/gemini-2.5-pro',
+      glmModel: process.env.OPENROUTER_GLM_MODEL || 'z-ai/glm-5',
+    },
+    deepl: {
+      apiKey: deeplApiKey,
+      baseUrl: process.env.DEEPL_BASE_URL || (deeplApiKey.endsWith(':fx') ? 'https://api-free.deepl.com' : ''),
+      formality: process.env.DEEPL_FORMALITY || 'prefer_more',
+      modelType: process.env.DEEPL_MODEL_TYPE || 'prefer_quality_optimized',
+      splitSentences: process.env.DEEPL_SPLIT_SENTENCES || 'nonewlines',
+      preserveFormatting: String(process.env.DEEPL_PRESERVE_FORMATTING || 'true') !== 'false',
+      context:
+        process.env.DEEPL_CONTEXT ||
+        'Translate non-fiction book content and preserve terminology consistency, chronology, register, and named entities.',
+      customInstructions:
+        process.env.DEEPL_CUSTOM_INSTRUCTIONS ||
+        'Prefer natural Czech phrasing for biographies and popular science. Keep facts exact, preserve named entities, and resolve gender or case from context whenever possible.',
+    },
+    openai: {
+      apiKey: process.env.OPENAI_API_KEY || '',
+      model: process.env.OPENAI_TRANSLATION_MODEL || 'gpt-5.4',
+    },
+    google: {
+      accessToken: process.env.GOOGLE_CLOUD_ACCESS_TOKEN || '',
+      project: process.env.GOOGLE_CLOUD_PROJECT || '',
+    },
+    claude: {
+      apiKey: process.env.ANTHROPIC_API_KEY || '',
+      model: process.env.ANTHROPIC_TRANSLATION_MODEL || 'claude-sonnet-4-6',
+    },
+    glm: {
+      apiKey: process.env.GLM_API_KEY || process.env.OPENAI_COMPATIBLE_API_KEY || '',
+      baseUrl: process.env.GLM_API_BASE_URL || process.env.OPENAI_COMPATIBLE_API_BASE_URL || '',
+      model: process.env.GLM_TRANSLATION_MODEL || 'glm-5.1',
+    },
+  }
+}
+
 async function pingJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -800,6 +849,10 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/providers', (_req, res) => {
   res.json(buildProviderMatrix())
+})
+
+app.get('/api/settings/bootstrap', (_req, res) => {
+  res.json(buildSettingsBootstrap())
 })
 
 app.post('/api/providers/diagnostics', async (req, res) => {

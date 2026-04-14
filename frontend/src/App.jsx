@@ -259,6 +259,31 @@ function sanitizePreviewHtml(html) {
   } catch (error) { console.error('[sanitizePreviewHtml] failed', error); return html }
 }
 
+function mergeBootstrapIntoSettings(current, bootstrap) {
+  if (!bootstrap) return current
+  const merged =
+    typeof structuredClone !== 'undefined'
+      ? structuredClone(current)
+      : JSON.parse(JSON.stringify(current))
+  const sections = ['app', 'openrouter', 'deepl', 'openai', 'google', 'claude', 'glm']
+  for (const section of sections) {
+    const source = bootstrap[section] || {}
+    merged[section] = { ...(merged[section] || {}) }
+    for (const [key, value] of Object.entries(source)) {
+      const existing = merged[section][key]
+      const shouldFill =
+        existing === undefined ||
+        existing === null ||
+        existing === '' ||
+        (typeof existing === 'boolean' && existing !== value && key === 'useForAll')
+      if (shouldFill) {
+        merged[section][key] = value
+      }
+    }
+  }
+  return merged
+}
+
 function buildEpubRequestPayload(payload, originalBookData, fallbackFileName = 'book.epub') {
   const formData = new FormData()
   formData.append('payload', JSON.stringify(payload))
@@ -602,6 +627,33 @@ export default function App() {
       .then((response) => parseJsonSafely(response))
       .then((payload) => setBackendHealth(payload))
       .catch(() => setBackendHealth(null))
+  }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
+
+  useEffect(() => {
+    if (hostedFrontendMissingBackend) return
+    let cancelled = false
+    async function bootstrapSettingsFromBackend() {
+      try {
+        const response = await fetch(apiUrl('/api/settings/bootstrap', runtimeApiBaseUrl))
+        const payload = await parseJsonSafely(response)
+        if (!response.ok || !payload || cancelled) return
+        setSettings((current) => {
+          const next = mergeBootstrapIntoSettings(current, payload)
+          if (JSON.stringify(next) !== JSON.stringify(current)) {
+            persistSettings(next)
+            setSettingsSavedAt(new Date().toLocaleTimeString('cs-CZ'))
+            setSettingsSaveError('')
+          }
+          return next
+        })
+      } catch {
+        // bootstrap is best-effort only
+      }
+    }
+    bootstrapSettingsFromBackend()
+    return () => {
+      cancelled = true
+    }
   }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
 
   useEffect(() => {
