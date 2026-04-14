@@ -72,10 +72,11 @@ async function idbDeleteCheckpoint(jobId) {
 }
 
 const SETTINGS_STORAGE_KEY = 'ebook-translator-settings-v1'
+const DEFAULT_BACKEND_URL = 'http://localhost:4317'
 
 const DEFAULT_SETTINGS = {
   app: {
-    backendUrl: '',
+    backendUrl: DEFAULT_BACKEND_URL,
   },
   openrouter: {
     apiKey: '',
@@ -120,10 +121,49 @@ const GLM_HOSTED_PRESETS = [
   { id: 'siliconflow', label: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'THUDM/GLM-4.5' },
 ]
 
+function applyEffectiveProviderSettings(settings) {
+  const next =
+    typeof structuredClone !== 'undefined'
+      ? structuredClone(settings)
+      : JSON.parse(JSON.stringify(settings))
+
+  next.app = { ...(next.app || {}) }
+  if (!next.app.backendUrl) {
+    next.app.backendUrl = DEFAULT_BACKEND_URL
+  }
+
+  if (next.openrouter?.useForAll && next.openrouter?.apiKey) {
+    const sharedKey = next.openrouter.apiKey
+    next.openai = {
+      ...(next.openai || {}),
+      apiKey: next.openai?.apiKey || sharedKey,
+      model: next.openai?.model || next.openrouter.openaiModel || 'gpt-5.4',
+    }
+    next.claude = {
+      ...(next.claude || {}),
+      apiKey: next.claude?.apiKey || sharedKey,
+      model: next.claude?.model || next.openrouter.claudeModel || 'claude-sonnet-4-6',
+    }
+    next.google = {
+      ...(next.google || {}),
+      accessToken: next.google?.accessToken || sharedKey,
+      project: next.google?.project || 'openrouter',
+    }
+    next.glm = {
+      ...(next.glm || {}),
+      apiKey: next.glm?.apiKey || sharedKey,
+      baseUrl: next.glm?.baseUrl || next.openrouter.baseUrl || 'https://openrouter.ai/api/v1',
+      model: next.glm?.model || next.openrouter.glmModel || 'z-ai/glm-5',
+    }
+  }
+
+  return next
+}
+
 function loadStoredSettings() {
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY) || window.sessionStorage.getItem(SETTINGS_STORAGE_KEY)
-    if (!raw) return DEFAULT_SETTINGS
+    if (!raw) return applyEffectiveProviderSettings(DEFAULT_SETTINGS)
     // Migrace: vždy přepiš pricing na správné defaulty z backendu
     // (starší verze měly špatné hodnoty openai: 30, claude: 28 atd.)
     const parsed = JSON.parse(raw)
@@ -147,8 +187,8 @@ function loadStoredSettings() {
     if (!merged.openrouter.apiKey) merged.openrouter.apiKey = DEFAULT_SETTINGS.openrouter.apiKey
     if (!merged.openrouter.baseUrl) merged.openrouter.baseUrl = DEFAULT_SETTINGS.openrouter.baseUrl
     if (merged.openrouter.useForAll === undefined) merged.openrouter.useForAll = DEFAULT_SETTINGS.openrouter.useForAll
-    return merged
-  } catch { return DEFAULT_SETTINGS }
+    return applyEffectiveProviderSettings(merged)
+  } catch { return applyEffectiveProviderSettings(DEFAULT_SETTINGS) }
 }
 
 function formatNumber(value) { return Number(value || 0).toLocaleString('cs-CZ') }
@@ -281,7 +321,7 @@ function mergeBootstrapIntoSettings(current, bootstrap) {
       }
     }
   }
-  return merged
+  return applyEffectiveProviderSettings(merged)
 }
 
 function buildEpubRequestPayload(payload, originalBookData, fallbackFileName = 'book.epub') {
@@ -596,6 +636,7 @@ export default function App() {
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
   const [settingsSavedAt, setSettingsSavedAt] = useState('')
   const [settingsSaveError, setSettingsSaveError] = useState('')
+  const didPersistInitialSettingsRef = useRef(false)
   const pollingRef = useRef({ jobId: '', startedAt: 0, failures: 0 })
   const idbSectionsRef = useRef(0)
   const previewAbortRef = useRef(null)
@@ -628,6 +669,18 @@ export default function App() {
       .then((payload) => setBackendHealth(payload))
       .catch(() => setBackendHealth(null))
   }, [runtimeApiBaseUrl, hostedFrontendMissingBackend])
+
+  useEffect(() => {
+    if (didPersistInitialSettingsRef.current) return
+    didPersistInitialSettingsRef.current = true
+    try {
+      persistSettings(settings)
+      setSettingsSavedAt(new Date().toLocaleTimeString('cs-CZ'))
+      setSettingsSaveError('')
+    } catch {
+      // best-effort hydration persist
+    }
+  }, [settings])
 
   useEffect(() => {
     if (hostedFrontendMissingBackend) return
