@@ -991,7 +991,7 @@
   padding: 7px 10px;
   align-items: start;
   cursor: pointer;
-  border-radius: 14px;
+  border-radius: 6px;
 }
 
 .wb-filter-row:hover { background: rgba(245, 242, 239, 0.72); }
@@ -1101,12 +1101,13 @@
 ════════════════════════════════════════════════════════ */
 .wb-resume-banner {
   background: rgba(37, 99, 235, 0.07);
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 6px;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  box-shadow: rgba(37, 99, 235, 0.08) 0 4px 12px;
 }
 .wb-resume-banner-text {
   font-size: 13px;
@@ -1175,17 +1176,17 @@
 }
 
 .wb-review-chip {
-  border: 1px solid rgba(0,0,0,0.08);
+  border: 0;
   background: rgba(255,255,255,0.85);
   color: var(--text-2);
-  border-radius: 999px;
+  border-radius: 6px;
   padding: 6px 10px;
   font-size: 11px;
   cursor: pointer;
+  box-shadow: rgba(0,0,0,0.04) 0 4px 10px;
 }
 
 .wb-review-chip.is-active {
-  border-color: rgba(37, 99, 235, 0.26);
   color: #1f46a1;
   background: rgba(37, 99, 235, 0.1);
 }
@@ -1197,13 +1198,14 @@
 }
 
 .wb-review-finding {
-  border: 1px solid rgba(0,0,0,0.07);
+  border: 0;
   background: rgba(255,255,255,0.74);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  box-shadow: rgba(0,0,0,0.04) 0 4px 10px;
 }
 
 .wb-review-finding-head {
@@ -1259,13 +1261,14 @@
 }
 
 .wb-audit-diff-card {
-  border: 1px solid rgba(0,0,0,0.075);
+  border: 0;
   background: rgba(255,255,255,0.82);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  box-shadow: rgba(0,0,0,0.04) 0 4px 10px;
 }
 
 .wb-audit-diff-head {
@@ -1292,9 +1295,9 @@
 }
 
 .wb-audit-diff-pair > div {
-  border: 1px solid rgba(0,0,0,0.06);
+  border: 0;
   background: rgba(248,247,245,0.78);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 10px;
   min-width: 0;
 }
@@ -1322,9 +1325,10 @@
   color: var(--text-3);
   font-size: 12px;
   line-height: 1.5;
-  border: 1px dashed rgba(0,0,0,0.1);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 6px;
   padding: 12px;
+  background: rgba(248,247,245,0.78);
 }
 
 .wb-action-group--final {
@@ -1342,21 +1346,20 @@
   justify-content: flex-start;
   font-size: 13px;
   font-weight: 500;
-  border: 1px solid rgba(0,0,0,0.06);
+  border: 0;
   background: #ffffff;
   color: var(--text);
   cursor: pointer;
   letter-spacing: 0.01em;
   gap: 5px;
   padding: 0 14px;
-  border-radius: 999px;
-  box-shadow: rgba(0,0,0,0.4) 0px 0px 1px, rgba(0,0,0,0.04) 0px 4px 4px;
+  border-radius: 6px;
+  box-shadow: rgba(0,0,0,0.05) 0 5px 12px;
 }
 
 .wb-btn:hover:not(:disabled) {
   background: rgba(245,242,239,0.8);
   color: var(--text);
-  border-color: rgba(0,0,0,0.08);
 }
 
 .wb-btn:disabled {
@@ -1516,14 +1519,14 @@
   gap: 8px;
   min-height: 54px;
   padding: 7px 8px;
-  border: 1px solid rgba(0,0,0,0.055);
-  border-radius: 14px;
+  border: 0;
+  border-radius: 6px;
   background: rgba(255,255,255,0.72);
+  box-shadow: rgba(0,0,0,0.04) 0 4px 10px;
 }
 
 .wb-job-row.is-current {
   background: rgba(245,242,239,0.72);
-  border-color: rgba(78,50,23,0.08);
 }
 
 .wb-job-row-main {
