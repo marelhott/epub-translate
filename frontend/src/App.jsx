@@ -1644,7 +1644,9 @@ export default function App() {
                 <div className="wb-action-group-head">LLM kontrola překladu</div>
                 {isHostedFrontend ? (
                   <div className="wb-storage-warning wb-storage-warning--inline">
-                    Frontend běží na Vercelu, backend hledám na <strong>{API_BASE_URL || HOSTED_LOCAL_BACKEND_FALLBACK}</strong>. Pro dlouhé LLM operace nech backend běžet lokálně.
+                    Frontend běží na Vercelu. {runtimeApiBaseUrl
+                      ? <>Backend je nastavený na <strong>{runtimeApiBaseUrl}</strong>.</>
+                      : <>Vyplň v nastavení <strong>Backend URL</strong> na svůj backend.</>}
                   </div>
                 ) : null}
                 <button
