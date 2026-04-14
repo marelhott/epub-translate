@@ -611,10 +611,14 @@ export default function App() {
   }, [providers, settings])
 
   useEffect(() => {
+    if (hostedFrontendMissingBackend) {
+      setJobs([])
+      return undefined
+    }
     loadJobs().catch(() => {})
     const interval = window.setInterval(() => loadJobs().catch(() => {}), 5000)
     return () => window.clearInterval(interval)
-  }, [])
+  }, [hostedFrontendMissingBackend, runtimeApiBaseUrl])
 
   useEffect(() => {
     if (!analysis?.sections) return
@@ -1259,13 +1263,6 @@ export default function App() {
 
         {/* ─── WORKSPACE ──────────────────────────────── */}
         <div className="wb-workspace">
-
-          {hostedFrontendMissingBackend ? (
-            <div className="wb-storage-warning wb-storage-warning--standalone">
-              Frontend běží na Vercelu, ale backend URL není nastavená. Otevři nastavení a vyplň <strong>Backend URL</strong> na HTTPS backend, nebo používej celou appku lokálně přes <strong>npm run dev</strong>.
-            </div>
-          ) : null}
-
           {/* ── LEFT SIDEBAR ── */}
           <aside className="wb-sidebar-l">
 
@@ -1642,13 +1639,6 @@ export default function App() {
 
               <div className="wb-action-group wb-action-group--review">
                 <div className="wb-action-group-head">LLM kontrola překladu</div>
-                {isHostedFrontend ? (
-                  <div className="wb-storage-warning wb-storage-warning--inline">
-                    Frontend běží na Vercelu. {runtimeApiBaseUrl
-                      ? <>Backend je nastavený na <strong>{runtimeApiBaseUrl}</strong>.</>
-                      : <>Vyplň v nastavení <strong>Backend URL</strong> na svůj backend.</>}
-                  </div>
-                ) : null}
                 <button
                   className="wb-btn wb-btn--review-claude"
                   disabled={!importedHtmlMeta || reviewJob?.status === 'processing'}
