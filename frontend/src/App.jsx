@@ -956,6 +956,12 @@ export default function App() {
       .slice(0, 8)
   }, [selectedAuditResult])
 
+  const liveAuditFindings = useMemo(() => (
+    Array.isArray(reviewJob?.progress?.recentFindings)
+      ? reviewJob.progress.recentFindings.slice(0, 8)
+      : []
+  ), [reviewJob])
+
 
   function updateSettings(section, field, value) {
     setSettings((cur) => ({ ...cur, [section]: { ...cur[section], [field]: value } }))
@@ -1766,6 +1772,39 @@ export default function App() {
                       ? `→ ${reviewJob.progress.currentSectionTitle}`
                       : 'Audituju další sekci…'}
                   </div>
+                  {liveAuditFindings.length ? (
+                    <div className="wb-audit-diff-list">
+                      <div className="wb-audit-diff-title">Poslední nalezené chyby</div>
+                      {liveAuditFindings.map((finding, index) => (
+                        <div key={`${finding.sectionId || 'section'}-${finding.index ?? index}-${index}`} className="wb-audit-diff-card">
+                          <div className="wb-audit-diff-head">
+                            <span>{finding.title || finding.sectionId || 'sekce'}</span>
+                            <span>
+                              {auditIssueLabel(finding.issueType)} · {auditSeverityLabel(finding.severity)} · {Math.round(Number(finding.confidence || 0) * 100)}%
+                              {finding.autoApplied ? ' · použito' : ' · návrh'}
+                            </span>
+                          </div>
+                          {finding.reason ? (
+                            <div className="wb-audit-diff-reason">{finding.reason}</div>
+                          ) : null}
+                          <div className="wb-audit-diff-pair">
+                            <div>
+                              <span>Původní znění</span>
+                              <p>{finding.beforeText || '—'}</p>
+                            </div>
+                            <div>
+                              <span>Opravené znění</span>
+                              <p>{finding.afterText || '—'}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="wb-audit-empty-note">
+                      Jakmile audit najde větu s opravou, ukážu ji tady jako původní znění a opravenou verzi.
+                    </div>
+                  )}
                 </div>
               )}
 

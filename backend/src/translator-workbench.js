@@ -1881,6 +1881,7 @@ export async function reviewTranslatedHtml(payload) {
   let currentSectionTitle = ''
   let currentSectionId = ''
   const sectionAudits = []
+  const recentFindings = []
 
   const reportProgress = async (stage) => {
     if (!onProgress) return
@@ -1893,6 +1894,7 @@ export async function reviewTranslatedHtml(payload) {
       changedSections,
       findingsCount,
       autoAppliedCount,
+      recentFindings: recentFindings.slice(-12).reverse(),
       percent: targetIds.length
         ? Number(((processedSections / targetIds.length) * 100).toFixed(2))
         : 100,
@@ -1963,12 +1965,34 @@ export async function reviewTranslatedHtml(payload) {
             autoApplied,
             originalText: block?.originalPlainText || '',
             translatedText: block?.translatedPlainText || '',
+            suggestedText: normalizeText(
+              cheerio.load(`<body>${finding.suggestedHtml || ''}</body>`, { xmlMode: true })('body').text()
+            ),
           }
         })
         .filter((finding) => auditBlocks[finding.index])
 
       findingsCount += findings.length
       autoAppliedCount += findings.filter((finding) => finding.autoApplied).length
+      recentFindings.push(
+        ...findings
+          .filter((finding) => finding.suggestedText)
+          .map((finding) => ({
+            sectionId,
+            title: currentSectionTitle,
+            index: finding.index,
+            issueType: finding.issueType,
+            severity: finding.severity,
+            confidence: finding.confidence,
+            reason: finding.reason,
+            autoApplied: finding.autoApplied,
+            beforeText: finding.translatedText,
+            afterText: finding.suggestedText,
+          }))
+      )
+      if (recentFindings.length > 30) {
+        recentFindings.splice(0, recentFindings.length - 30)
+      }
 
       let nextSectionHtml = translatedSection.bodyHtml
       const appliedPayloads = [...translatedBlocks]

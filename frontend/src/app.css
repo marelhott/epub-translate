@@ -1211,6 +1211,93 @@
   font-family: var(--mono);
 }
 
+.wb-audit-diff-list {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 46vh;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.wb-audit-diff-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.wb-audit-diff-card {
+  border: 1px solid rgba(0,0,0,0.075);
+  background: rgba(255,255,255,0.82);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wb-audit-diff-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.wb-audit-diff-reason {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.45;
+}
+
+.wb-audit-diff-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.wb-audit-diff-pair > div {
+  border: 1px solid rgba(0,0,0,0.06);
+  background: rgba(248,247,245,0.78);
+  border-radius: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.wb-audit-diff-pair span {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 7px;
+}
+
+.wb-audit-diff-pair p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.wb-audit-empty-note {
+  margin-top: 14px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px dashed rgba(0,0,0,0.1);
+  border-radius: 8px;
+  padding: 12px;
+}
+
 /* Buttons */
 .wb-btn {
   width: 100%;
