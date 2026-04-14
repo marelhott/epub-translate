@@ -72,11 +72,20 @@ async function idbDeleteCheckpoint(jobId) {
 }
 
 const SETTINGS_STORAGE_KEY = 'ebook-translator-settings-v1'
-const DEFAULT_BACKEND_URL = 'http://localhost:4317'
+
+function defaultBackendUrl() {
+  if (typeof window === 'undefined') return 'http://localhost:4317'
+  const host = window.location.hostname || ''
+  const isLocalHost =
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0'
+  return isLocalHost ? 'http://localhost:4317' : ''
+}
 
 const DEFAULT_SETTINGS = {
   app: {
-    backendUrl: DEFAULT_BACKEND_URL,
+    backendUrl: defaultBackendUrl(),
   },
   openrouter: {
     apiKey: '',
@@ -129,7 +138,7 @@ function applyEffectiveProviderSettings(settings) {
 
   next.app = { ...(next.app || {}) }
   if (!next.app.backendUrl) {
-    next.app.backendUrl = DEFAULT_BACKEND_URL
+    next.app.backendUrl = defaultBackendUrl()
   }
 
   if (next.openrouter?.useForAll && next.openrouter?.apiKey) {
@@ -650,6 +659,7 @@ export default function App() {
     if (ENV_API_BASE_URL) return ENV_API_BASE_URL
     return ''
   }, [settings])
+  const hostedFrontendUsesLocalBackend = isHostedFrontend && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(runtimeApiBaseUrl)
   const hostedFrontendMissingBackend = isHostedFrontend && !runtimeApiBaseUrl
 
   useEffect(() => {
@@ -933,7 +943,11 @@ export default function App() {
   async function refreshDiagnostics(nextSettings = settings) {
     setDiagnosticsLoading(true)
     try {
-      const response = await fetch(apiUrl('/api/providers/diagnostics', runtimeApiBaseUrl), {
+      const targetBaseUrl = String(nextSettings?.app?.backendUrl || runtimeApiBaseUrl || '').trim().replace(/\/$/, '')
+      if (isHostedFrontend && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(targetBaseUrl)) {
+        throw new Error('Frontend na Vercelu nevidí localhost backend. Použij lokální frontend, nebo nastav veřejnou HTTPS URL backendu.')
+      }
+      const response = await fetch(apiUrl('/api/providers/diagnostics', targetBaseUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings: sanitizeSettings(nextSettings) }),
@@ -974,11 +988,24 @@ export default function App() {
     return false
   }
 
+  function requireReachableBackend(actionLabel) {
+    if (hostedFrontendUsesLocalBackend) {
+      const detail = actionLabel
+        ? `Pro ${actionLabel} nemůže Vercel frontend použít localhost backend.`
+        : 'Vercel frontend nemůže použít localhost backend.'
+      setError(detail)
+      setStatusText('Použij lokální frontend, nebo nastav veřejnou HTTPS URL backendu.')
+      setIsSettingsOpen(true)
+      return false
+    }
+    return requireBackend(actionLabel)
+  }
+
   async function handleFileUpload(event) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
-    if (!requireBackend('načtení EPUBu')) return
+    if (!requireReachableBackend('načtení EPUBu')) return
     setOriginalBookData(null); setTranslatedBookData(null); setTranslatedBlob(null)
     setPreview(null); setJob(null); setExportMeta(null); setError('')
     setImportedHtmlMeta(null); setReviewJob(null); setReviewResults({})
@@ -1024,7 +1051,7 @@ export default function App() {
 
   async function runPreviewTranslation() {
     if (!analysis?.sections?.length || !includedSections.length || !originalBookData) return
-    if (!requireBackend('překlad preview')) return
+    if (!requireReachableBackend('překlad preview')) return
     previewAbortRef.current?.abort()
     const controller = new AbortController()
     previewAbortRef.current = controller
@@ -1063,7 +1090,7 @@ export default function App() {
 
   async function startTranslation() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
-    if (!requireBackend('plný překlad')) return
+    if (!requireReachableBackend('plný překlad')) return
     // Prevent duplicate jobs — if a job is already running, ignore
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
@@ -1099,7 +1126,7 @@ export default function App() {
 
   async function startTranslationWithCheckpoint(idbEntry) {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData || !idbEntry?.sections) return
-    if (!requireBackend('obnovení překladu')) return
+    if (!requireReachableBackend('obnovení překladu')) return
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
       return
@@ -1136,7 +1163,7 @@ export default function App() {
 
   async function resumeTranslation(targetJob) {
     if (!targetJob?.id) return
-    if (!requireBackend('obnovení překladu')) return
+    if (!requireReachableBackend('obnovení překladu')) return
     if (job?.status === 'processing' || job?.status === 'queued') {
       setError('Překlad už běží. Počkej na dokončení nebo obnov stránku.')
       return
@@ -1180,7 +1207,7 @@ export default function App() {
 
   async function downloadExternalHtml() {
     if (!analysis?.sessionId || !includedSections.length || !originalBookData) return
-    if (!requireBackend('HTML export')) return
+    if (!requireReachableBackend('HTML export')) return
     setError('')
     setStatusText('Připravuju HTML export…')
     try {
@@ -1223,7 +1250,7 @@ export default function App() {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file || !analysis?.sessionId || !originalBookData) return
-    if (!requireBackend('import HTML')) return
+    if (!requireReachableBackend('import HTML')) return
     setError('')
     setStatusText('Nahrávám přeložené HTML pro budoucí LLM kontrolu…')
     try {
@@ -1261,7 +1288,7 @@ export default function App() {
 
   async function startHtmlReview(provider) {
     if (!analysis?.sessionId || !importedHtmlMeta) return
-    if (!requireBackend('LLM kontrolu')) return
+    if (!requireReachableBackend('LLM kontrolu')) return
     if (reviewJob?.status === 'processing' || reviewJob?.status === 'queued') {
       setError('LLM kontrola už právě běží.')
       return
@@ -1294,7 +1321,7 @@ export default function App() {
 
   async function packageReviewedHtml() {
     if (!analysis?.sessionId || !importedHtmlMeta) return
-    if (!requireBackend('zabalení EPUBu')) return
+    if (!requireReachableBackend('zabalení EPUBu')) return
     setError('')
     setStatusText('Balím zkontrolované HTML zpět do EPUB…')
     try {
