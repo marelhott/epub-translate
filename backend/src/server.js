@@ -312,7 +312,10 @@ function splitJobSettings(settings = {}) {
 }
 
 function mergeRuntimeSettings(job) {
-  const runtimeSecrets = jobSecrets.get(job.id) || {}
+  const runtimeSecrets = {
+    ...(job.secretSettings || {}),
+    ...(jobSecrets.get(job.id) || {}),
+  }
   return {
     ...(job.settings || {}),
     openrouter: { ...(job.settings?.openrouter || {}), ...(runtimeSecrets.openrouter || {}) },
@@ -1020,6 +1023,7 @@ app.post('/api/html-review', async (req, res) => {
       targetLanguage: payload.targetLanguage || 'cs',
       sections: payload.sections || [],
       settings: publicSettings,
+      secretSettings,
       createdAt: nowIso(),
       updatedAt: nowIso(),
       startedAt: '',
@@ -1147,6 +1151,7 @@ app.post('/api/jobs/:id/resume', upload.single('file'), async (req, res) => {
       resumedAt: nowIso(),
       error: '',
       settings: publicSettings,
+      secretSettings,
       progress: {
         ...(job.progress || {}),
         stage: (await readCheckpoint(job.id)) ? 'resuming-export' : 'queued',
@@ -1214,6 +1219,7 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
       sourceLanguage: payload?.sourceLanguage || '',
       targetLanguage: payload?.targetLanguage || 'cs',
       settings: publicSettings,
+      secretSettings,
       status: 'queued',
       createdAt: nowIso(),
       updatedAt: nowIso(),
