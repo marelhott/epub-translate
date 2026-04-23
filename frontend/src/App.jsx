@@ -1258,10 +1258,14 @@ export default function App() {
 
   function downloadTranslatedBook() {
     if (!translatedBlob) return
-    const url = URL.createObjectURL(translatedBlob)
+    triggerEpubDownload(translatedBlob, exportMeta?.fileName || 'translated.clean.epub')
+  }
+
+  function triggerEpubDownload(blob, fileName = 'translated.clean.epub') {
+    const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = exportMeta?.fileName || 'translated.clean.epub'
+    link.download = fileName
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -1342,7 +1346,7 @@ export default function App() {
       setExportMeta(null)
       setReviewJob(null)
       setReviewResults({})
-      setStatusText('HTML import hotový. Spusť audit překladu přes Sonnet nebo GPT.')
+      setStatusText('HTML import hotový. Můžeš rovnou stáhnout EPUB, nebo spustit volitelný AI audit.')
     } catch (importError) {
       setError(importError.message)
       setStatusText('Import HTML selhal.')
@@ -1382,11 +1386,11 @@ export default function App() {
     }
   }
 
-  async function packageReviewedHtml() {
+  async function packageReviewedHtml({ useReview = true, autoDownload = false } = {}) {
     if (!analysis?.sessionId || !importedHtmlMeta) return
     if (!requireBackend('zabalení EPUBu')) return
     setError('')
-    setStatusText('Balím zkontrolované HTML zpět do EPUB…')
+    setStatusText(useReview ? 'Balím zkontrolované HTML zpět do EPUB…' : 'Balím nahrané HTML přímo do EPUB…')
     try {
       const response = await fetch(apiUrl('/api/package-html', runtimeApiBaseUrl), {
         method: 'POST',
@@ -1396,7 +1400,7 @@ export default function App() {
           fileName: analysis.fileName,
           targetLanguage: 'cs',
           sections: analysis.sections,
-          reviewProvider: reviewResults[selectedReviewProvider] ? selectedReviewProvider : '',
+          reviewProvider: useReview && reviewResults[selectedReviewProvider] ? selectedReviewProvider : '',
         }),
       })
       if (!response.ok) {
@@ -1415,7 +1419,12 @@ export default function App() {
       setTranslatedBlob(blob)
       setTranslatedBookData(bookData)
       setExportMeta({ fileName, cacheHits: 0, cacheMisses: 0 })
-      setStatusText('EPUB je připraven ke stažení.')
+      if (autoDownload) {
+        triggerEpubDownload(blob, fileName)
+        setStatusText(useReview ? 'Zkontrolovaný EPUB stažen.' : 'EPUB stažen bez AI auditu.')
+      } else {
+        setStatusText('EPUB je připraven ke stažení.')
+      }
     } catch (packError) {
       setError(packError.message)
       setStatusText('Zabalení EPUB selhalo.')
@@ -1963,9 +1972,16 @@ export default function App() {
                 </button>
                 {importedHtmlMeta ? (
                   <div className="wb-action-note">
-                    HTML nahrané. {Math.round((importedHtmlMeta.bytes || 0) / 1024)} kB připraveno ke kontrole.
+                    HTML nahrané. {Math.round((importedHtmlMeta.bytes || 0) / 1024)} kB můžeš rovnou zabalit do EPUB, nebo poslat na volitelný audit.
                   </div>
                 ) : null}
+                <button
+                  className="wb-btn wb-btn--package"
+                  disabled={!importedHtmlMeta}
+                  onClick={() => packageReviewedHtml({ useReview: false, autoDownload: true })}
+                >
+                  Stáhnout EPUB bez AI auditu
+                </button>
               </div>
 
               <div className="wb-action-group wb-action-group--review">
@@ -2076,9 +2092,9 @@ export default function App() {
                 <button
                   className="wb-btn wb-btn--package"
                   disabled={!importedHtmlMeta || !Object.keys(reviewResults).length}
-                  onClick={packageReviewedHtml}
+                  onClick={() => packageReviewedHtml({ useReview: true })}
                 >
-                  Zabalit zpět do EPUB
+                  Zabalit auditované HTML
                 </button>
                 <button
                   className="wb-btn wb-btn--download"

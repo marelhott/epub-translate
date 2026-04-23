@@ -39,6 +39,35 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+function secondsBetween(startedAt, finishedAt = nowIso()) {
+  const start = Date.parse(startedAt || '')
+  const end = Date.parse(finishedAt || '')
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return 0
+  }
+  return Number(((end - start) / 1000).toFixed(2))
+}
+
+function buildTelemetrySkeleton(kind = 'translation') {
+  return {
+    kind,
+    wallTimeSeconds: 0,
+    totalWords: 0,
+    totalCharacters: 0,
+    processedWords: 0,
+    processedCharacters: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    findingsCount: 0,
+    autoAppliedCount: 0,
+    scannedCharacters: 0,
+    flaggedCharacters: 0,
+    providerCostEur: null,
+    reviewCostEur: null,
+    translationCostEur: null,
+  }
+}
+
 function sessionFilePath(sessionId) {
   return join(UPLOADS_DIR, `${sessionId}.epub`)
 }
@@ -228,6 +257,7 @@ async function publicJob(job) {
     error: job.error || '',
     outputFileName: job.outputFileName || '',
     audit: job.audit || null,
+    telemetry: job.telemetry || buildTelemetrySkeleton(job.kind || 'translation'),
     checkpoint: checkpoint
       ? {
           completedSections: Object.keys(checkpoint.sections || {}).length,
@@ -607,6 +637,10 @@ async function processJob(jobId, options = {}) {
       startedAt: job.startedAt || nowIso(),
       updatedAt: nowIso(),
       error: '',
+      telemetry: {
+        ...buildTelemetrySkeleton('translation'),
+        ...(job.telemetry || {}),
+      },
       progress: {
         ...job.progress,
         stage: checkpointCount ? 'resuming-export' : 'preparing-export',
@@ -702,6 +736,19 @@ async function processJob(jobId, options = {}) {
           ...job.summary,
           translatedSections: result.stats.translatedSections,
         },
+        telemetry: {
+          ...(job.telemetry || buildTelemetrySkeleton('translation')),
+          kind: 'translation',
+          wallTimeSeconds: secondsBetween(started.startedAt || started.createdAt, nowIso()),
+          totalWords: result.stats.totalWords || 0,
+          totalCharacters: result.stats.totalCharacters || 0,
+          processedWords: result.stats.processedWords || 0,
+          processedCharacters: result.stats.processedCharacters || 0,
+          cacheHits: result.stats.cacheHits || 0,
+          cacheMisses: result.stats.cacheMisses || 0,
+          translationCostEur: null,
+          providerCostEur: null,
+        },
       }
       await writeJob(completed)
     } catch (error) {
@@ -714,6 +761,11 @@ async function processJob(jobId, options = {}) {
           status: 'failed',
           updatedAt: nowIso(),
           error: errorMessage,
+          telemetry: {
+            ...buildTelemetrySkeleton('translation'),
+            ...(current?.telemetry || {}),
+            wallTimeSeconds: secondsBetween(current?.startedAt || current?.createdAt, nowIso()),
+          },
         }
         await writeJob(failed)
       } catch (writeError) {
@@ -768,6 +820,10 @@ async function processReviewJob(jobId) {
         startedAt: job.startedAt || nowIso(),
         updatedAt: nowIso(),
         error: '',
+        telemetry: {
+          ...buildTelemetrySkeleton('review'),
+          ...(job.telemetry || {}),
+        },
         progress: {
           ...(job.progress || {}),
           stage: 'reviewing-html',
@@ -832,6 +888,17 @@ async function processReviewJob(jobId) {
           author: result.stats.author,
         },
         audit: result.audit || null,
+        telemetry: {
+          ...(job.telemetry || buildTelemetrySkeleton('review')),
+          kind: 'review',
+          wallTimeSeconds: secondsBetween(started.startedAt || started.createdAt, nowIso()),
+          findingsCount: result.stats.findingsCount || 0,
+          autoAppliedCount: result.stats.autoAppliedCount || 0,
+          scannedCharacters: result.stats.scannedCharacters || 0,
+          flaggedCharacters: result.stats.flaggedCharacters || 0,
+          reviewCostEur: null,
+          providerCostEur: null,
+        },
       })
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
@@ -841,6 +908,11 @@ async function processReviewJob(jobId) {
         status: 'failed',
         updatedAt: nowIso(),
         error: errorMessage,
+        telemetry: {
+          ...buildTelemetrySkeleton('review'),
+          ...((await readJob(jobId))?.telemetry || {}),
+          wallTimeSeconds: secondsBetween(job?.startedAt || job?.createdAt, nowIso()),
+        },
       })
     } finally {
       activeJobs.delete(jobId)
@@ -1071,6 +1143,7 @@ app.post('/api/html-review', async (req, res) => {
         percent: 0,
       },
       summary: {},
+      telemetry: buildTelemetrySkeleton('review'),
     }
     jobSecrets.set(jobId, secretSettings)
     await writeJob(reviewJob)
@@ -1264,6 +1337,11 @@ app.post('/api/jobs', upload.single('file'), async (req, res) => {
         tailTrimmedSections: analysisSummary.tailTrimmedSections || 0,
       },
       plan,
+      telemetry: {
+        ...buildTelemetrySkeleton('translation'),
+        totalWords: plan.totalWords || 0,
+        totalCharacters: plan.totalCharacters || 0,
+      },
       progress: {
         stage: 'queued',
         processedBlocks: 0,

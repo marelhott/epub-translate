@@ -12,6 +12,8 @@
     "dev:backend": "npm run dev --workspace backend",
     "build": "npm run build --workspace frontend",
     "start": "npm run start --workspace backend",
-    "test:integration": "node backend/scripts/integration-test.js"
+    "test:integration": "node backend/scripts/integration-test.js",
+    "test:packaging": "node backend/scripts/packaging-regression-test.js",
+    "epubcheck:install": "bash backend/scripts/install-epubcheck.sh"
   }
 }

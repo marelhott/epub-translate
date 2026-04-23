@@ -1,11 +1,12 @@
 import JSZip from 'jszip'
-import { XMLBuilder, XMLParser } from 'fast-xml-parser'
+import { XMLBuilder, XMLParser, XMLValidator } from 'fast-xml-parser'
 import * as cheerio from 'cheerio'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { validateEpubBuffer } from './epubcheck.js'
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
@@ -362,20 +363,50 @@ function normalizeXhtmlDocument(html, targetLanguage = '') {
   return $.xml().replace(/&(?!#?[a-z0-9]+;)/gi, '&amp;')
 }
 
+function validateXhtmlWellFormed(xml, label = 'document') {
+  const validation = XMLValidator.validate(String(xml || ''), {
+    allowBooleanAttributes: true,
+  })
+  if (validation === true) {
+    return true
+  }
+
+  const error = validation?.err || {}
+  const location =
+    error.line !== undefined && error.col !== undefined
+      ? ` na řádku ${error.line}, sloupec ${error.col}`
+      : ''
+  throw new Error(`XHTML validace selhala pro ${label}${location}: ${error.msg || 'neplatné XML'}`)
+}
+
 function validateXhtmlDocument(html, label = 'document') {
+  let tempDir = ''
   try {
-    const tempDir = mkdtempSync(join(tmpdir(), 'epub-xhtml-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'epub-xhtml-'))
     const filePath = join(tempDir, `${label.replace(/[^a-z0-9._-]+/gi, '_')}.xhtml`)
     const wrapped = String(html || '').startsWith('<?xml')
       ? String(html || '')
       : `<?xml version="1.0" encoding="utf-8"?>\n${String(html || '')}`
     writeFileSync(filePath, wrapped, 'utf-8')
-    execFileSync('xmllint', ['--noout', filePath], { stdio: 'pipe' })
-    rmSync(tempDir, { recursive: true, force: true })
+    try {
+      execFileSync('xmllint', ['--noout', filePath], { stdio: 'pipe' })
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error
+      }
+      validateXhtmlWellFormed(wrapped, label)
+    }
     return true
   } catch (error) {
     const detail = String(error?.stderr || error?.message || '').trim()
+    if (/^XHTML validace selhala/.test(detail)) {
+      throw new Error(detail)
+    }
     throw new Error(`XHTML validace selhala pro ${label}: ${detail}`)
+  } finally {
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   }
 }
 
@@ -430,6 +461,7 @@ function extractJsonObject(raw) {
 }
 
 async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtml, title, settings }) {
+  const reviewSettings = buildReviewSettings(provider, settings)
   const reviewer =
     provider === 'claude'
       ? translateWithClaude
@@ -459,7 +491,7 @@ async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtm
         sourceLanguage: 'en',
         targetLanguage: 'cs',
         format: 'text',
-        settings,
+        settings: reviewSettings,
         systemPrompt,
       }),
     { retries: 2, initialDelayMs: 900, label: `${provider} html review` }
@@ -469,6 +501,7 @@ async function reviewHtmlFragmentWithLlm({ provider, originalHtml, translatedHtm
 }
 
 async function auditHtmlBlocksWithLlm({ provider, sectionTitle, blocks, settings }) {
+  const reviewSettings = buildReviewSettings(provider, settings)
   const reviewer =
     provider === 'claude'
       ? translateWithClaude
@@ -505,10 +538,10 @@ async function auditHtmlBlocksWithLlm({ provider, sectionTitle, blocks, settings
         sourceLanguage: 'en',
         targetLanguage: 'cs',
         format: 'text',
-        settings,
+        settings: reviewSettings,
         systemPrompt,
       }),
-    { retries: 2, initialDelayMs: 900, label: `${provider} html audit` }
+    { retries: 0, initialDelayMs: 900, label: `${provider} html audit` }
   )
 
   const parsed = extractJsonObject(raw)
@@ -578,6 +611,129 @@ function extractBodyText(html) {
       paragraphCount: paragraphs.length,
     },
   }
+}
+
+const COMMON_ENGLISH_REVIEW_WORDS = new Set([
+  'the',
+  'and',
+  'with',
+  'from',
+  'that',
+  'this',
+  'these',
+  'those',
+  'chapter',
+  'introduction',
+  'prologue',
+  'epilogue',
+  'part',
+  'notes',
+  'copyright',
+  'contents',
+  'acknowledgments',
+  'index',
+  'author',
+  'publisher',
+  'page',
+  'book',
+  'years',
+  'work',
+  'people',
+  'their',
+  'there',
+  'about',
+  'into',
+  'between',
+  'through',
+  'while',
+  'where',
+  'when',
+  'because',
+  'before',
+  'after',
+  'during',
+])
+
+function countWords(text) {
+  return normalizeText(text)
+    .split(/\s+/)
+    .filter(Boolean).length
+}
+
+function englishResidueScore(text) {
+  const words = normalizeText(text)
+    .toLowerCase()
+    .match(/[a-z][a-z'-]{2,}/g)
+  if (!words?.length) {
+    return 0
+  }
+  let score = 0
+  for (const word of words) {
+    if (COMMON_ENGLISH_REVIEW_WORDS.has(word)) {
+      score += 1
+    }
+  }
+  return score
+}
+
+function hasMeaningfulMarkupDifference(originalHtml, translatedHtml) {
+  const originalTags = tagSignature(originalHtml)
+  const translatedTags = tagSignature(translatedHtml)
+  return originalTags !== translatedTags
+}
+
+function looksLikeAwkwardCzech(text) {
+  const normalized = normalizeText(text)
+  if (!normalized) return false
+  return (
+    /\b(v knize|v textu|v článku)\s+\*\*/i.test(normalized) ||
+    /\btokeny\b/i.test(normalized) ||
+    /\bznaky\s+místo\s+slov\b/i.test(normalized) ||
+    /\bAI\b.{0,20}\bprojekt\b/i.test(normalized)
+  )
+}
+
+function classifyAuditNeed(block) {
+  const sourceWords = countWords(block.originalPlainText)
+  const translatedWords = countWords(block.translatedPlainText)
+  const ratio = sourceWords > 0 ? translatedWords / sourceWords : 1
+  const englishScore = englishResidueScore(block.translatedPlainText)
+  const sourceEnglishScore = englishResidueScore(block.originalPlainText)
+  const markupRisk = hasMeaningfulMarkupDifference(block.originalPlainText, block.translatedSource)
+  const awkwardCzech = looksLikeAwkwardCzech(block.translatedPlainText)
+  const veryShort = Math.max(sourceWords, translatedWords) < 6
+
+  const reasons = []
+  if (englishScore >= 2) reasons.push('english-residue')
+  if (awkwardCzech) reasons.push('awkward-czech')
+  if (markupRisk) reasons.push('markup-drift')
+  if (ratio > 1.85 || ratio < 0.45) reasons.push('length-drift')
+  if (sourceEnglishScore >= 3 && translatedWords < 4) reasons.push('possible-omission')
+  if (/["“”„]/.test(block.originalPlainText) !== /["“”„]/.test(block.translatedPlainText)) reasons.push('quote-mismatch')
+
+  const shouldAudit = !veryShort && reasons.length > 0
+  return {
+    shouldAudit,
+    reasons,
+    sourceWords,
+    translatedWords,
+  }
+}
+
+function filterAuditBlocks(blocks) {
+  const flagged = []
+  for (const block of blocks) {
+    const audit = classifyAuditNeed(block)
+    if (audit.shouldAudit) {
+      flagged.push({
+        ...block,
+        auditReasons: audit.reasons,
+        sourceWords: audit.sourceWords,
+        translatedWords: audit.translatedWords,
+      })
+    }
+  }
+  return flagged
 }
 
 function detectBallastCategory(section) {
@@ -838,36 +994,314 @@ async function readPackageXml(zip, packagePath) {
   return content
 }
 
-function updateOpfLanguage(packageXml, targetLanguage) {
+function buildOpfTimestamp(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(date.getTime()) ? new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') : date.toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function decodeBasicXmlEntities(value) {
+  return String(value || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+function stripAttribute(fragment, attributeName) {
+  const pattern = new RegExp(`\\s+${attributeName}="[^"]*"`, 'gi')
+  return String(fragment || '').replace(pattern, '')
+}
+
+function normalizePackageTag(packageXml, targetLanguage) {
+  const normalizedTarget = escapeHtml(String(targetLanguage || 'cs').trim())
+  return String(packageXml || '').replace(/<package\b([^>]*)>/i, (_match, attrs) => {
+    let nextAttrs = String(attrs || '')
+    if (!/\bxmlns="/i.test(nextAttrs)) {
+      nextAttrs += ' xmlns="http://www.idpf.org/2007/opf"'
+    }
+    nextAttrs = stripAttribute(nextAttrs, 'lang')
+    if (/\bxml:lang="/i.test(nextAttrs)) {
+      nextAttrs = nextAttrs.replace(/\bxml:lang="[^"]*"/i, `xml:lang="${normalizedTarget}"`)
+    } else {
+      nextAttrs += ` xml:lang="${normalizedTarget}"`
+    }
+    return `<package${nextAttrs}>`
+  })
+}
+
+function normalizeMetadataTag(source) {
+  return String(source || '').replace(/<metadata\b([^>]*)>/i, (_match, attrs) => {
+    let nextAttrs = String(attrs || '')
+    if (!/\bxmlns:dc="/i.test(nextAttrs)) {
+      nextAttrs += ' xmlns:dc="http://purl.org/dc/elements/1.1/"'
+    }
+    if (!/\bxmlns:opf="/i.test(nextAttrs)) {
+      nextAttrs += ' xmlns:opf="http://www.idpf.org/2007/opf"'
+    }
+    return `<metadata${nextAttrs}>`
+  })
+}
+
+function extractMetadataOpeningAttributes(source) {
+  const metadataMatch = String(source || '').match(/<metadata\b([^>]*)>/i)
+  if (!metadataMatch) {
+    return {}
+  }
+  const attrs = {}
+  for (const match of metadataMatch[1].matchAll(/([a-zA-Z_:][\w:.-]*)="([^"]*)"/g)) {
+    attrs[match[1]] = match[2]
+  }
+  return attrs
+}
+
+function ensureDcMetadataElement(source, fieldName, fallbackValue) {
+  const escapedValue = escapeHtml(String(fallbackValue || '').trim())
+  if (!escapedValue) {
+    return source
+  }
+
+  const dcTag = `dc:${fieldName}`
+  const plainTag = fieldName
+  const existingPattern = new RegExp(`<${dcTag}\\b[^>]*>[\\s\\S]*?<\\/${dcTag}>`, 'i')
+  if (existingPattern.test(source)) {
+    return source.replace(existingPattern, `<${dcTag}>${escapedValue}</${dcTag}>`)
+  }
+
+  const plainPattern = new RegExp(`<${plainTag}\\b([^>]*)>[\\s\\S]*?<\\/${plainTag}>`, 'i')
+  if (plainPattern.test(source)) {
+    return source.replace(plainPattern, `<${dcTag}$1>${escapedValue}</${dcTag}>`)
+  }
+
+  return source.replace(/<metadata\b[^>]*>/i, (match) => `${match}\n    <${dcTag}>${escapedValue}</${dcTag}>`)
+}
+
+function ensureDctermsModified(source, modifiedAt) {
+  const timestamp = escapeHtml(buildOpfTimestamp(modifiedAt))
+  if (/<meta\b[^>]*property="dcterms:modified"[^>]*>[\s\S]*?<\/meta>/i.test(source)) {
+    return source.replace(
+      /<meta\b([^>]*)property="dcterms:modified"([^>]*)>[\s\S]*?<\/meta>/i,
+      `<meta$1property="dcterms:modified"$2>${timestamp}</meta>`
+    )
+  }
+  if (/<meta\b[^>]*property="dcterms:modified"[^>]*\/>/i.test(source)) {
+    return source.replace(
+      /<meta\b([^>]*)property="dcterms:modified"([^>]*)\/>/i,
+      `<meta$1property="dcterms:modified"$2>${timestamp}</meta>`
+    )
+  }
+  return source.replace(/<metadata\b[^>]*>/i, (match) => `${match}\n    <meta property="dcterms:modified">${timestamp}</meta>`)
+}
+
+function ensureLegacyCoverMeta(source) {
+  if (/<meta\b(?=[^>]*\bname="cover")(?=[^>]*\bcontent="[^"]+")[^>]*\/?>/i.test(source)) {
+    return source
+  }
+  return source.replace(/<metadata\b[^>]*>/i, (match) => `${match}\n    <meta name="cover" content="cover-image"/>`)
+}
+
+function stripBrokenMetadataAttributes(source) {
+  return String(source || '').replace(/<metadata\b([^>]*)>/i, (_match, attrs) => {
+    let nextAttrs = String(attrs || '')
+    for (const field of ['title', 'creator', 'source', 'date', 'type', 'format', 'language', 'publisher', 'rights', 'description']) {
+      nextAttrs = stripAttribute(nextAttrs, field)
+    }
+    return `<metadata${nextAttrs}>`
+  })
+}
+
+export function updateOpfMetadata(packageXml, targetLanguage, options = {}) {
   const source = String(packageXml || '')
   const normalizedTarget = String(targetLanguage || 'cs').trim()
   if (!source.trim() || !normalizedTarget) {
     return source
   }
 
-  let next = source
-  next = next.replace(/(<package\b[^>]*\bxml:lang=")([^"]*)(")/i, `$1${escapeHtml(normalizedTarget)}$3`)
-  next = next.replace(/(<package\b(?![^>]*\bxml:lang=)[^>]*)(>)/i, `$1 xml:lang="${escapeHtml(normalizedTarget)}"$2`)
+  let next = normalizePackageTag(source, normalizedTarget)
+  next = normalizeMetadataTag(next)
 
-  if (/<dc:language\b[^>]*>[\s\S]*?<\/dc:language>/i.test(next)) {
-    return next.replace(
-      /<dc:language\b([^>]*)>[\s\S]*?<\/dc:language>/i,
-      `<dc:language$1>${escapeHtml(normalizedTarget)}</dc:language>`
+  const metadataAttributes = extractMetadataOpeningAttributes(next)
+  const identifierFallback = next.match(/<identifier\b[^>]*>([\s\S]*?)<\/identifier>/i)?.[1] || ''
+  next = stripBrokenMetadataAttributes(next)
+
+  const dcFieldMap = [
+    ['title', decodeBasicXmlEntities(metadataAttributes.title)],
+    ['creator', decodeBasicXmlEntities(metadataAttributes.creator)],
+    ['identifier', decodeBasicXmlEntities(metadataAttributes.identifier || identifierFallback)],
+    ['source', decodeBasicXmlEntities(metadataAttributes.source)],
+    ['date', decodeBasicXmlEntities(metadataAttributes.date)],
+    ['type', decodeBasicXmlEntities(metadataAttributes.type)],
+    ['format', decodeBasicXmlEntities(metadataAttributes.format)],
+    ['publisher', decodeBasicXmlEntities(metadataAttributes.publisher)],
+    ['rights', decodeBasicXmlEntities(metadataAttributes.rights)],
+    ['language', normalizedTarget],
+  ]
+
+  for (const [fieldName, value] of dcFieldMap) {
+    next = ensureDcMetadataElement(next, fieldName, value)
+  }
+
+  if (metadataAttributes.description && !/<(?:dc:)?description\b[^>]*>/i.test(next)) {
+    next = next.replace(
+      /<metadata\b[^>]*>/i,
+      (match) => `${match}\n    <dc:description>${escapeHtml(decodeBasicXmlEntities(metadataAttributes.description))}</dc:description>`
     )
   }
 
-  if (/<metadata\b[^>]*>/i.test(next)) {
-    return next.replace(
-      /<\/metadata>/i,
-      `  <dc:language>${escapeHtml(normalizedTarget)}</dc:language>\n</metadata>`
-    )
-  }
-
+  next = ensureDctermsModified(next, options.modifiedAt)
+  next = ensureLegacyCoverMeta(next)
   return next
 }
 
 function findManifestByHref(pkg, targetHref) {
   return toArray(pkg.manifest?.item).find((item) => item.href === targetHref || item.href === targetHref.split('/').pop())
+}
+
+function relativeHref(packagePath, fullPath) {
+  const prefix = packagePath.includes('/') ? packagePath.slice(0, packagePath.lastIndexOf('/') + 1) : ''
+  return String(fullPath || '').startsWith(prefix) ? String(fullPath || '').slice(prefix.length) : String(fullPath || '')
+}
+
+function relativePathBetween(fromPath, toPath) {
+  const from = String(fromPath || '').split('/').filter(Boolean)
+  const to = String(toPath || '').split('/').filter(Boolean)
+  from.pop()
+  while (from.length && to.length && from[0] === to[0]) {
+    from.shift()
+    to.shift()
+  }
+  return `${from.map(() => '..').join('/')}${from.length ? '/' : ''}${to.join('/')}` || toPath
+}
+
+function ensureManifestNavItem(packageXml, navHref) {
+  const source = String(packageXml || '')
+  if (!source.trim() || !navHref) {
+    return source
+  }
+  if (/<item\b(?=[^>]*\bproperties="[^"]*\bnav\b[^"]*")/i.test(source)) {
+    return source
+  }
+  if (!/<manifest\b[^>]*>/i.test(source)) {
+    return source
+  }
+  return source.replace(
+    /<\/manifest>/i,
+    `  <item href="${escapeHtml(navHref)}" id="nav" media-type="application/xhtml+xml" properties="nav"></item>\n</manifest>`
+  )
+}
+
+function pruneGuideReferences(packageXml, existingRelativeHrefs) {
+  const $ = cheerio.load(String(packageXml || ''), { xmlMode: true })
+  $('guide reference').each((_index, element) => {
+    const href = $(element).attr('href')?.split('#')[0] || ''
+    if (!href) return
+    if (!existingRelativeHrefs.has(href) && !existingRelativeHrefs.has(href.split('/').pop())) {
+      $(element).remove()
+    }
+  })
+  if ($('guide').children().length === 0) {
+    $('guide').remove()
+  }
+  return $.xml()
+}
+
+function buildNavDocLabelFromHtml(html, fallbackLabel) {
+  const $ = cheerio.load(String(html || ''), { xmlMode: true })
+  const label =
+    normalizeText($('h1').first().text()) ||
+    normalizeText($('h2').first().text()) ||
+    normalizeText($('title').first().text()) ||
+    normalizeText(fallbackLabel)
+  return label || 'Section'
+}
+
+async function buildRepairNavigationDocuments({ zip, pkg, packagePath, targetLanguage }) {
+  const manifestItems = toArray(pkg.manifest?.item).map((item) => ({
+    ...item,
+    fullHref: resolvePath(packagePath, item.href),
+  }))
+  const manifestById = new Map(manifestItems.map((item) => [item.id, item]))
+  const spineItems = toArray(pkg.spine?.itemref)
+  const navEntries = []
+  const navRelativePath = 'xhtml/nav.xhtml'
+
+  for (const itemRef of spineItems) {
+    const manifestItem = manifestById.get(itemRef.idref)
+    if (!manifestItem?.href || !/html|xhtml/i.test(manifestItem['media-type'] || '')) {
+      continue
+    }
+    const file = zip.file(manifestItem.fullHref)
+    if (!file) {
+      continue
+    }
+    const html = await file.async('string')
+    navEntries.push({
+      href: manifestItem.href,
+      navHref: relativePathBetween(navRelativePath, manifestItem.href),
+      label: buildNavDocLabelFromHtml(html, manifestItem.id || manifestItem.href),
+    })
+  }
+
+  const navHtml = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${escapeHtml(targetLanguage)}" xml:lang="${escapeHtml(targetLanguage)}">`,
+    '<head>',
+    '  <title>Navigation</title>',
+    '</head>',
+    '<body>',
+    '  <nav epub:type="toc" id="toc">',
+    '    <h1>Contents</h1>',
+    '    <ol>',
+    navEntries.map((entry) => `      <li><a href="${escapeHtml(entry.navHref)}">${escapeHtml(entry.label)}</a></li>`).join('\n'),
+    '    </ol>',
+    '  </nav>',
+    '</body>',
+    '</html>',
+  ].join('\n')
+
+  const ncxXml = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">',
+    '  <head>',
+    `    <meta name="dtb:uid" content="${escapeHtml(normalizeText(toArray(pkg.metadata?.identifier)?.[0]?.['#text'] || toArray(pkg.metadata?.identifier)?.[0] || 'book'))}"/>`,
+    '    <meta name="dtb:depth" content="1"/>',
+    '    <meta name="dtb:totalPageCount" content="0"/>',
+    '    <meta name="dtb:maxPageNumber" content="0"/>',
+    '  </head>',
+    '  <docTitle><text>Navigation</text></docTitle>',
+    '  <navMap>',
+    navEntries
+      .map(
+        (entry, index) => [
+          `    <navPoint id="navPoint${index + 1}" playOrder="${index + 1}">`,
+          `      <navLabel><text>${escapeHtml(entry.label)}</text></navLabel>`,
+          `      <content src="${escapeHtml(entry.href)}"/>`,
+          '    </navPoint>',
+        ].join('\n')
+      )
+      .join('\n'),
+    '  </navMap>',
+    '</ncx>',
+  ].join('\n')
+
+  return { navHtml, ncxXml }
+}
+
+function repairBrokenLinksInXhtml(html, currentHref, existingRelativeHrefs) {
+  const $ = cheerio.load(String(html || ''), { xmlMode: true })
+  $('a[href]').each((_index, element) => {
+    const href = $(element).attr('href') || ''
+    if (!href || href.startsWith('http:') || href.startsWith('https:') || href.startsWith('mailto:')) {
+      return
+    }
+    const resolved = resolvePath(currentHref, href)
+    const relative = resolved.replace(/^.*?OEBPS\//, '')
+    const fileOnly = relative.split('#')[0]
+    if (!existingRelativeHrefs.has(fileOnly) && !existingRelativeHrefs.has(fileOnly.split('/').pop())) {
+      $(element).replaceWith($(element).contents())
+    }
+  })
+  return $.xml()
 }
 
 function buildSectionMap(sections) {
@@ -1138,13 +1572,66 @@ function resolveOpenRouterConfig(settings = {}) {
         ? Boolean(settings.openrouter.useForAll)
         : String(process.env.OPENROUTER_USE_FOR_ALL || 'true') !== 'false',
     openaiModel: settings?.openrouter?.openaiModel || process.env.OPENROUTER_OPENAI_MODEL || 'openai/gpt-5.4',
+    openaiReviewModel:
+      settings?.openrouter?.openaiReviewModel || process.env.OPENROUTER_OPENAI_REVIEW_MODEL || 'openai/gpt-5-mini',
     claudeModel:
       settings?.openrouter?.claudeModel || process.env.OPENROUTER_CLAUDE_MODEL || 'anthropic/claude-sonnet-4.6',
+    claudeReviewModel:
+      settings?.openrouter?.claudeReviewModel ||
+      process.env.OPENROUTER_CLAUDE_REVIEW_MODEL ||
+      'anthropic/claude-3.5-haiku',
     googleModel:
       settings?.openrouter?.googleModel || process.env.OPENROUTER_GOOGLE_MODEL || 'google/gemini-2.5-pro',
     glmModel:
       settings?.openrouter?.glmModel || process.env.OPENROUTER_GLM_MODEL || 'z-ai/glm-5',
   }
+}
+
+function buildReviewSettings(provider, settings = {}) {
+  if (!settings || typeof settings !== 'object') {
+    return settings
+  }
+
+  if (provider === 'claude') {
+    const reviewModel =
+      settings?.openrouter?.claudeReviewModel ||
+      process.env.OPENROUTER_CLAUDE_REVIEW_MODEL ||
+      ''
+    if (!reviewModel) return settings
+    return {
+      ...settings,
+      openrouter: {
+        ...(settings.openrouter || {}),
+        claudeModel: reviewModel,
+      },
+      claude: {
+        ...(settings.claude || {}),
+        model: settings?.claude?.reviewModel || process.env.ANTHROPIC_REVIEW_MODEL || settings?.claude?.model,
+      },
+    }
+  }
+
+  if (provider === 'openai') {
+    const reviewModel =
+      settings?.openrouter?.openaiReviewModel ||
+      process.env.OPENROUTER_OPENAI_REVIEW_MODEL ||
+      ''
+    return {
+      ...settings,
+      openrouter: reviewModel
+        ? {
+            ...(settings.openrouter || {}),
+            openaiModel: reviewModel,
+          }
+        : { ...(settings.openrouter || {}) },
+      openai: {
+        ...(settings.openai || {}),
+        model: settings?.openai?.reviewModel || process.env.OPENAI_REVIEW_MODEL || settings?.openai?.model,
+      },
+    }
+  }
+
+  return settings
 }
 
 function getOpenRouterModelForProvider(provider, settings = {}) {
@@ -1547,6 +2034,7 @@ export async function buildExportPlan(payload) {
   const sectionPlans = []
   let totalBlocks = 0
   let totalWords = 0
+  let totalCharacters = 0
 
   for (const section of includedSections) {
     const file = zip.file(section.href)
@@ -1558,12 +2046,14 @@ export async function buildExportPlan(payload) {
     const measured = countTranslatableNodes(html)
     totalBlocks += measured.count
     totalWords += section.stats?.wordCount || 0
+    totalCharacters += section.stats?.charCount || 0
     sectionPlans.push({
       id: section.id,
       href: section.href,
       title: section.title,
       blockCount: measured.count,
       wordCount: section.stats?.wordCount || 0,
+      charCount: section.stats?.charCount || 0,
       trimApplied: measured.trim.trimApplied,
       trimSignals: measured.trim.trimSignals,
     })
@@ -1577,6 +2067,7 @@ export async function buildExportPlan(payload) {
     translatedSections: sectionPlans.length,
     totalBlocks,
     totalWords,
+    totalCharacters,
     estimatedPages: Math.max(1, Math.ceil(totalWords / 300)),
     sections: sectionPlans,
   }
@@ -1602,33 +2093,11 @@ function updatePackageForCleanSpine(pkg, includedSectionIds) {
 }
 
 function pruneNavDocument(html, includedHrefs) {
-  const $ = cheerio.load(html, { xmlMode: true })
-
-  $('nav li').each((_index, element) => {
-    const href = $(element).find('a[href]').first().attr('href')?.split('#')[0]
-    if (href && !includedHrefs.has(href) && !includedHrefs.has(href.split('/').pop())) {
-      $(element).remove()
-    }
-  })
-
-  return $.xml()
+  return html
 }
 
 function pruneNcxDocument(xml, includedHrefs) {
-  const parsed = xmlParser.parse(xml)
-  const navMap = parsed?.ncx?.navMap
-  const navPoints = toArray(navMap?.navPoint)
-  if (!navMap || !navPoints.length) {
-    return xml
-  }
-
-  const filtered = navPoints.filter((point) => {
-    const src = point?.content?.src?.split('#')[0]
-    return src && (includedHrefs.has(src) || includedHrefs.has(src.split('/').pop()))
-  })
-
-  parsed.ncx.navMap.navPoint = filtered
-  return xmlBuilder.build(parsed)
+  return xml
 }
 
 export async function analyzeEpubBuffer(buffer, options = {}) {
@@ -1868,7 +2337,7 @@ export async function importTranslatedHtmlToEpub(payload) {
     importedCount += 1
   }
 
-  zip.file(packagePath, updateOpfLanguage(packageXml, targetLanguage))
+  zip.file(packagePath, updateOpfMetadata(packageXml, targetLanguage))
 
   const orderedZip = new JSZip()
   orderedZip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
@@ -1884,6 +2353,8 @@ export async function importTranslatedHtmlToEpub(payload) {
     compression: 'DEFLATE',
     compressionOptions: { level: 6 },
   })
+
+  validateEpubBuffer(rebuilt, fileName)
 
   return {
     buffer: rebuilt,
@@ -1927,10 +2398,14 @@ export async function reviewTranslatedHtml(payload) {
   let changedSections = 0
   let findingsCount = 0
   let autoAppliedCount = 0
+  let scannedCharacters = 0
+  let flaggedCharacters = 0
   let currentSectionTitle = ''
   let currentSectionId = ''
   const sectionAudits = []
   const recentFindings = []
+  let flaggedBlocksCount = 0
+  let skippedBlocksCount = 0
 
   const reportProgress = async (stage) => {
     if (!onProgress) return
@@ -1950,7 +2425,7 @@ export async function reviewTranslatedHtml(payload) {
     })
   }
 
-  const CONCURRENCY = Math.max(1, Math.min(4, targetIds.length))
+  const CONCURRENCY = Math.max(1, Math.min(8, targetIds.length))
   let cursor = 0
 
   const worker = async () => {
@@ -1984,25 +2459,39 @@ export async function reviewTranslatedHtml(payload) {
         translatedSource: translatedBlocks[blockIndex]?.source || '',
       })).filter((block) => block.originalPlainText && block.translatedPlainText)
 
+      const flaggedBlocks = filterAuditBlocks(auditBlocks)
+      flaggedBlocksCount += flaggedBlocks.length
+      skippedBlocksCount += Math.max(0, auditBlocks.length - flaggedBlocks.length)
+      scannedCharacters += auditBlocks.reduce(
+        (sum, block) => sum + String(block.originalPlainText || '').length + String(block.translatedPlainText || '').length,
+        0
+      )
+      flaggedCharacters += flaggedBlocks.reduce(
+        (sum, block) => sum + String(block.originalPlainText || '').length + String(block.translatedPlainText || '').length,
+        0
+      )
+
       let findings = []
-      try {
-        const chunkSize = 8
-        for (let start = 0; start < auditBlocks.length; start += chunkSize) {
-          const batch = auditBlocks.slice(start, start + chunkSize)
-          const batchFindings = await auditHtmlBlocksWithLlm({
-            provider,
-            sectionTitle: currentSectionTitle,
-            blocks: batch,
-            settings,
-          })
-          findings.push(...batchFindings)
+      if (flaggedBlocks.length) {
+        try {
+          const chunkSize = 6
+          for (let start = 0; start < flaggedBlocks.length; start += chunkSize) {
+            const batch = flaggedBlocks.slice(start, start + chunkSize)
+            const batchFindings = await auditHtmlBlocksWithLlm({
+              provider,
+              sectionTitle: currentSectionTitle,
+              blocks: batch,
+              settings,
+            })
+            findings.push(...batchFindings)
+          }
+        } catch (error) {
+          console.error(
+            `[reviewTranslatedHtml] section ${sectionId} audit failed, keeping original translation:`,
+            error instanceof Error ? error.message : error
+          )
+          findings = []
         }
-      } catch (error) {
-        console.error(
-          `[reviewTranslatedHtml] section ${sectionId} audit failed, keeping original translation:`,
-          error instanceof Error ? error.message : error
-        )
-        findings = []
       }
 
       findings = findings
@@ -2068,6 +2557,16 @@ export async function reviewTranslatedHtml(payload) {
       sectionAudits.push({
         sectionId,
         title: currentSectionTitle,
+        scannedBlockCount: auditBlocks.length,
+        flaggedBlockCount: flaggedBlocks.length,
+        scannedCharacters: auditBlocks.reduce(
+          (sum, block) => sum + String(block.originalPlainText || '').length + String(block.translatedPlainText || '').length,
+          0
+        ),
+        flaggedCharacters: flaggedBlocks.reduce(
+          (sum, block) => sum + String(block.originalPlainText || '').length + String(block.translatedPlainText || '').length,
+          0
+        ),
         findingCount: findings.length,
         autoAppliedCount: findings.filter((finding) => finding.autoApplied).length,
         findings: findings.slice(0, 20),
@@ -2092,6 +2591,10 @@ export async function reviewTranslatedHtml(payload) {
       changedSections,
       findingsCount,
       autoAppliedCount,
+      flaggedBlocksCount,
+      skippedBlocksCount,
+      scannedCharacters,
+      flaggedCharacters,
       title,
       author,
     },
@@ -2116,11 +2619,16 @@ export async function repairPackagedEpub(payload) {
   const zip = await JSZip.loadAsync(buffer)
   const packagePath = await readContainer(zip)
   const pkg = await readPackage(zip, packagePath)
-  const packageXml = await readPackageXml(zip, packagePath)
+  let packageXml = await readPackageXml(zip, packagePath)
   const manifestItems = toArray(pkg.manifest?.item).map((item) => ({
     ...item,
     href: resolvePath(packagePath, item.href),
   }))
+  const existingRelativeHrefs = new Set(
+    Object.keys(zip.files)
+      .filter((name) => !zip.files[name].dir)
+      .map((name) => relativeHref(packagePath, name))
+  )
 
   let repairedFiles = 0
   for (const item of manifestItems) {
@@ -2133,13 +2641,34 @@ export async function repairPackagedEpub(payload) {
       continue
     }
     const html = await file.async('string')
-    const repaired = normalizeXhtmlDocument(html, targetLanguage)
+    const linked = repairBrokenLinksInXhtml(html, item.href, existingRelativeHrefs)
+    const repaired = normalizeXhtmlDocument(linked, targetLanguage)
     validateXhtmlDocument(repaired, item.href)
     zip.file(item.href, repaired)
     repairedFiles += 1
   }
 
-  zip.file(packagePath, updateOpfLanguage(packageXml, targetLanguage))
+  const navFullPath = resolvePath(packagePath, 'xhtml/nav.xhtml')
+  const navRelativePath = relativeHref(packagePath, navFullPath)
+  const { navHtml, ncxXml } = await buildRepairNavigationDocuments({
+    zip,
+    pkg,
+    packagePath,
+    targetLanguage,
+  })
+  zip.file(navFullPath, navHtml)
+  existingRelativeHrefs.add(navRelativePath)
+
+  const ncxItem = manifestItems.find((item) => /ncx/i.test(item['media-type'] || '') || /\.ncx$/i.test(item.href))
+  if (ncxItem?.href) {
+    zip.file(ncxItem.href, ncxXml)
+    existingRelativeHrefs.add(relativeHref(packagePath, ncxItem.href))
+  }
+
+  packageXml = updateOpfMetadata(packageXml, targetLanguage)
+  packageXml = ensureManifestNavItem(packageXml, navRelativePath)
+  packageXml = pruneGuideReferences(packageXml, existingRelativeHrefs)
+  zip.file(packagePath, packageXml)
 
   const orderedZip = new JSZip()
   orderedZip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
@@ -2155,6 +2684,8 @@ export async function repairPackagedEpub(payload) {
     compression: 'DEFLATE',
     compressionOptions: { level: 6 },
   })
+
+  validateEpubBuffer(rebuilt, fileName)
 
   return {
     buffer: rebuilt,
@@ -3042,10 +3573,15 @@ export async function exportTranslatedEpub(payload) {
   let cacheMisses = 0
   let processedBlocks = 0
   let processedWords = 0
+  let processedCharacters = 0
   const sectionTasks = []
   let totalBlocks = 0
   const totalWords = includedSections.reduce(
     (sum, section) => sum + (section.wordCount || section.stats?.wordCount || 0),
+    0
+  )
+  const totalCharacters = includedSections.reduce(
+    (sum, section) => sum + (section.charCount || section.stats?.charCount || 0),
     0
   )
 
@@ -3097,6 +3633,7 @@ export async function exportTranslatedEpub(payload) {
       zip.file(task.section.href, restoredHtml)
       processedBlocks += savedSection.processedBlocks || task.texts.length
       processedWords += savedSection.processedWords || task.section.wordCount || task.section.stats?.wordCount || 0
+      processedCharacters += savedSection.processedCharacters || task.section.charCount || task.section.stats?.charCount || 0
       cacheHits += savedSection.cacheHits || 0
       cacheMisses += savedSection.cacheMisses || 0
       continue
@@ -3166,6 +3703,7 @@ export async function exportTranslatedEpub(payload) {
     cacheMisses += translationBatch.cacheMisses
     processedBlocks += texts.length
     processedWords += section.wordCount || section.stats?.wordCount || 0
+    processedCharacters += section.charCount || section.stats?.charCount || 0
     const normalizedSectionHtml = normalizeXhtmlDocument(nextHtml, targetLanguage)
     validateXhtmlDocument(normalizedSectionHtml, section.href)
     zip.file(section.href, normalizedSectionHtml)
@@ -3181,6 +3719,7 @@ export async function exportTranslatedEpub(payload) {
           translatedHtml: normalizedSectionHtml,
           processedBlocks: texts.length,
           processedWords: section.wordCount || section.stats?.wordCount || 0,
+          processedCharacters: section.charCount || section.stats?.charCount || 0,
           cacheHits: translationBatch.cacheHits,
           cacheMisses: translationBatch.cacheMisses,
         },
@@ -3192,11 +3731,13 @@ export async function exportTranslatedEpub(payload) {
         stage: 'translating',
         processedBlocks,
         totalBlocks,
-        processedWords,
-        totalWords,
-        processedPages: Number((processedWords / 300).toFixed(2)),
-        totalPages: Math.max(1, Math.ceil(totalWords / 300)),
-        cacheHits,
+      processedWords,
+      processedCharacters,
+      totalWords,
+      totalCharacters,
+      processedPages: Number((processedWords / 300).toFixed(2)),
+      totalPages: Math.max(1, Math.ceil(totalWords / 300)),
+      cacheHits,
         cacheMisses,
         currentSectionId: section.id,
         currentSectionTitle: mode === 'chunk-fallback' ? `${section.title} · fallback` : section.title,
@@ -3239,7 +3780,7 @@ export async function exportTranslatedEpub(payload) {
   }
 
   // Don't prune the spine — keep original book structure intact
-  zip.file(packagePath, updateOpfLanguage(packageXml, targetLanguage))
+  zip.file(packagePath, updateOpfMetadata(packageXml, targetLanguage))
 
   // Rebuild ZIP with mimetype as the first, uncompressed entry (EPUB 3 spec requirement)
   const orderedZip = new JSZip()
@@ -3257,6 +3798,8 @@ export async function exportTranslatedEpub(payload) {
     compressionOptions: { level: 6 },
   })
 
+  validateEpubBuffer(rebuilt, fileName)
+
   return {
     buffer: rebuilt,
     fileName: buildOutputFileName(pkg.metadata, fileName, targetLanguage),
@@ -3267,7 +3810,9 @@ export async function exportTranslatedEpub(payload) {
       processedBlocks,
       totalBlocks,
       processedWords,
+      processedCharacters,
       totalWords,
+      totalCharacters,
       processedPages: Number((processedWords / 300).toFixed(2)),
       totalPages: Math.max(1, Math.ceil(totalWords / 300)),
     },

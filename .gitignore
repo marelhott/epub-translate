@@ -8,6 +8,9 @@ dist/
 frontend/dist/
 backend/data/
 backend/backend/
+backend/vendor/
 *.clean.epub
 .vercel
 .env*.local
+
+epub-web/.next/
