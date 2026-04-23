@@ -326,6 +326,9 @@ function defaultApiBaseUrl() {
   }
   return ''
 }
+function isLocalBackendUrl(url = '') {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(String(url || '').trim())
+}
 async function parseJsonSafely(response) {
   const text = await response.text()
   if (!text) return null
@@ -707,11 +710,11 @@ export default function App() {
     ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname || '')
   const runtimeApiBaseUrl = useMemo(() => {
     const explicit = String(settings.app?.backendUrl || '').trim().replace(/\/$/, '')
-    if (explicit) return explicit
+    if (explicit && (isLocalBrowser || !isLocalBackendUrl(explicit))) return explicit
     return defaultApiBaseUrl()
-  }, [settings])
+  }, [isLocalBrowser, settings])
   const remoteAppUsesLocalBackend =
-    !isLocalBrowser && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(runtimeApiBaseUrl)
+    !isLocalBrowser && isLocalBackendUrl(String(settings.app?.backendUrl || '').trim())
 
   useEffect(() => {
     async function loadProviders() {
