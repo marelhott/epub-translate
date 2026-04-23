@@ -1159,14 +1159,15 @@ app.post('/api/html-review', async (req, res) => {
   }
 })
 
-app.post('/api/package-html', async (req, res) => {
+app.post('/api/package-html', upload.single('file'), async (req, res) => {
   try {
-    const payload = req.body || {}
+    const payload = parseBodyPayload(req)
     if (!payload?.sessionId) {
       return res.status(400).json({ error: 'Chybí sessionId pro zabalení EPUB.' })
     }
-    const sourceBuffer = await resolveSourceBuffer(payload, null)
+    const sourceBuffer = await resolveSourceBuffer(payload, req.file)
     const reviewedHtml =
+      String(payload?.translatedHtml || '').trim() ||
       (payload?.reviewProvider && await readSessionArtifact(payload.sessionId, `reviewed-${payload.reviewProvider}`)) ||
       await readSessionArtifact(payload.sessionId, 'reviewed-latest') ||
       await readSessionArtifact(payload.sessionId, 'translated')

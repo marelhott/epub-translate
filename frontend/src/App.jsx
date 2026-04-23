@@ -678,6 +678,7 @@ export default function App() {
   const [translatedBookData, setTranslatedBookData] = useState(null)
   const [translatedBlob, setTranslatedBlob] = useState(null)
   const [importedHtmlMeta, setImportedHtmlMeta] = useState(null)
+  const [importedHtmlText, setImportedHtmlText] = useState('')
   const [reviewJob, setReviewJob] = useState(null)
   const [reviewResults, setReviewResults] = useState({})
   const [selectedReviewProvider, setSelectedReviewProvider] = useState('claude')
@@ -1071,7 +1072,7 @@ export default function App() {
     if (!requireBackend('načtení EPUBu')) return
     setOriginalBookData(null); setTranslatedBookData(null); setTranslatedBlob(null)
     setPreview(null); setJob(null); setExportMeta(null); setError('')
-    setImportedHtmlMeta(null); setReviewJob(null); setReviewResults({})
+    setImportedHtmlMeta(null); setImportedHtmlText(''); setReviewJob(null); setReviewResults({})
     setResumableJob(null)
     setStatusText('Načítám knihu…')
     const formData = new FormData()
@@ -1321,6 +1322,7 @@ export default function App() {
     setError('')
     setStatusText('Nahrávám přeložené HTML pro budoucí LLM kontrolu…')
     try {
+      const htmlText = await file.text()
       const formData = new FormData()
       formData.append('payload', JSON.stringify({
         sessionId: analysis.sessionId,
@@ -1330,7 +1332,7 @@ export default function App() {
         sections: analysis.sections,
         analysisSummary: analysis.summary,
       }))
-      formData.append('file', file, file.name)
+      formData.append('file', new Blob([htmlText], { type: 'text/html;charset=utf-8' }), file.name)
       const response = await fetch(apiUrl('/api/import-html', runtimeApiBaseUrl), {
         method: 'POST',
         body: formData,
@@ -1341,6 +1343,7 @@ export default function App() {
       }
       const payload = await parseJsonSafely(response)
       setImportedHtmlMeta(payload)
+      setImportedHtmlText(htmlText)
       setTranslatedBlob(null)
       setTranslatedBookData(null)
       setExportMeta(null)
@@ -1387,21 +1390,26 @@ export default function App() {
   }
 
   async function packageReviewedHtml({ useReview = true, autoDownload = false } = {}) {
-    if (!analysis?.sessionId || !importedHtmlMeta) return
+    if (!analysis?.sessionId || !importedHtmlMeta || !originalBookData) return
     if (!requireBackend('zabalení EPUBu')) return
+    if (!useReview && !importedHtmlText.trim()) {
+      setError('Chybí nahrané přeložené HTML v prohlížeči. Nahraj HTML znovu a pak stáhni EPUB bez auditu.')
+      return
+    }
     setError('')
     setStatusText(useReview ? 'Balím zkontrolované HTML zpět do EPUB…' : 'Balím nahrané HTML přímo do EPUB…')
     try {
+      const requestPayload = {
+        sessionId: analysis.sessionId,
+        fileName: analysis.fileName,
+        targetLanguage: 'cs',
+        sections: analysis.sections,
+        reviewProvider: useReview && reviewResults[selectedReviewProvider] ? selectedReviewProvider : '',
+        translatedHtml: useReview ? '' : importedHtmlText,
+      }
       const response = await fetch(apiUrl('/api/package-html', runtimeApiBaseUrl), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: analysis.sessionId,
-          fileName: analysis.fileName,
-          targetLanguage: 'cs',
-          sections: analysis.sections,
-          reviewProvider: useReview && reviewResults[selectedReviewProvider] ? selectedReviewProvider : '',
-        }),
+        body: buildEpubRequestPayload(requestPayload, originalBookData, analysis.fileName),
       })
       if (!response.ok) {
         const payload = await parseJsonSafely(response)
