@@ -28,8 +28,16 @@ dotenv.config()
 const app = express()
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const frontendDistDir = join(__dirname, '../../frontend/dist')
+const frontendDistCandidates = [
+  join(__dirname, '../../frontend/dist'),
+  join(__dirname, '../frontend/dist'),
+  join(__dirname, '../dist'),
+  join(process.cwd(), 'frontend/dist'),
+  join(process.cwd(), 'dist'),
+]
+const frontendDistDir = frontendDistCandidates.find((candidate) => existsSync(join(candidate, 'index.html'))) || frontendDistCandidates[0]
 const frontendIndexPath = join(frontendDistDir, 'index.html')
+const frontendDistCandidateIndex = frontendDistCandidates.indexOf(frontendDistDir)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024, fieldSize: 10 * 1024 * 1024 } })
 const activeJobs = new Map()
 const jobSecrets = new Map()
@@ -972,6 +980,8 @@ app.get('/api/health', (_req, res) => {
       process.env.SOURCE_COMMIT ||
       'unknown',
     hasOpenRouterEnv: Boolean((process.env.OPENROUTER_API_KEY || '').trim()),
+    frontendDistFound: existsSync(frontendIndexPath),
+    frontendDistCandidateIndex,
   })
 })
 
@@ -1401,4 +1411,5 @@ recoverJobs().catch((error) => {
 
 app.listen(port, () => {
   console.log(`ebook-translator-backend listening on http://localhost:${port}`)
+  console.log(`frontend dist ${existsSync(frontendIndexPath) ? 'found' : 'missing'} at candidate ${frontendDistCandidateIndex}`)
 })
