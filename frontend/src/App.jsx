@@ -1429,6 +1429,7 @@ export default function App() {
         sections: analysis.sections,
         reviewProvider: useReview && reviewResults[selectedReviewProvider] ? selectedReviewProvider : '',
         translatedHtml: useReview ? '' : importedHtmlText,
+        validate: useReview,
       }
       const response = await fetch(apiUrl('/api/package-html', runtimeApiBaseUrl), {
         method: 'POST',

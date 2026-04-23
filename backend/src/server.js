@@ -1190,6 +1190,7 @@ app.post('/api/package-html', upload.single('file'), async (req, res) => {
       fileName: payload?.fileName || 'book.epub',
       targetLanguage: payload?.targetLanguage || 'cs',
       sections: payload?.sections || [],
+      validate: payload?.validate !== false,
     })
     setAttachmentHeaders(res, result.fileName, 'application/epub+zip')
     return res.send(result.buffer)

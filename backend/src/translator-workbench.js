@@ -2282,6 +2282,7 @@ export async function importTranslatedHtmlToEpub(payload) {
     fileName = 'book.epub',
     targetLanguage = 'cs',
     sections = [],
+    validate = true,
   } = payload || {}
 
   if (!buffer) {
@@ -2332,7 +2333,9 @@ export async function importTranslatedHtmlToEpub(payload) {
       injectBodyInnerHtml(originalHtml, translatedBody),
       targetLanguage
     )
-    validateXhtmlDocument(normalizedSectionHtml, section.href)
+    if (validate) {
+      validateXhtmlDocument(normalizedSectionHtml, section.href)
+    }
     zip.file(section.href, normalizedSectionHtml)
     importedCount += 1
   }
@@ -2354,7 +2357,9 @@ export async function importTranslatedHtmlToEpub(payload) {
     compressionOptions: { level: 6 },
   })
 
-  validateEpubBuffer(rebuilt, fileName)
+  if (validate) {
+    validateEpubBuffer(rebuilt, fileName)
+  }
 
   return {
     buffer: rebuilt,
