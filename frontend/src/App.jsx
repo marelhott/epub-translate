@@ -75,12 +75,12 @@ const SETTINGS_STORAGE_KEY = 'ebook-translator-settings-v1'
 
 function defaultBackendUrl() {
   if (typeof window === 'undefined') return 'http://localhost:4317'
-  const host = window.location.hostname || ''
-  const isLocalHost =
-    host === 'localhost' ||
-    host === '127.0.0.1' ||
-    host === '0.0.0.0'
-  return isLocalHost ? 'http://localhost:4317' : ''
+  return isLocalBrowserHost() ? 'http://localhost:4317' : ''
+}
+
+function isLocalBrowserHost() {
+  if (typeof window === 'undefined') return false
+  return ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname || '')
 }
 
 const DEFAULT_SETTINGS = {
@@ -217,6 +217,7 @@ function loadStoredSettings() {
     if (!merged.openrouter.apiKey) merged.openrouter.apiKey = DEFAULT_SETTINGS.openrouter.apiKey
     if (!merged.openrouter.baseUrl) merged.openrouter.baseUrl = DEFAULT_SETTINGS.openrouter.baseUrl
     if (merged.openrouter.useForAll === undefined) merged.openrouter.useForAll = DEFAULT_SETTINGS.openrouter.useForAll
+    if (!isLocalBrowserHost() && isLocalBackendUrl(merged.app?.backendUrl)) merged.app.backendUrl = ''
     return applyEffectiveProviderSettings(merged)
   } catch { return applyEffectiveProviderSettings(DEFAULT_SETTINGS) }
 }
@@ -706,8 +707,7 @@ export default function App() {
   const reviewPollingRef = useRef({ jobId: '', failures: 0 })
   const [filters, setFilters] = useState({ includeMain: true, includeFront: false, includeBack: false, includeUnknown: false })
   const isLocalBrowser =
-    typeof window !== 'undefined' &&
-    ['localhost', '127.0.0.1', '0.0.0.0'].includes(window.location.hostname || '')
+    isLocalBrowserHost()
   const runtimeApiBaseUrl = useMemo(() => {
     const explicit = String(settings.app?.backendUrl || '').trim().replace(/\/$/, '')
     if (explicit && (isLocalBrowser || !isLocalBackendUrl(explicit))) return explicit
@@ -715,6 +715,14 @@ export default function App() {
   }, [isLocalBrowser, settings])
   const remoteAppUsesLocalBackend =
     !isLocalBrowser && isLocalBackendUrl(String(settings.app?.backendUrl || '').trim())
+
+  useEffect(() => {
+    if (!remoteAppUsesLocalBackend) return
+    setSettings((current) => ({
+      ...current,
+      app: { ...(current.app || {}), backendUrl: '' },
+    }))
+  }, [remoteAppUsesLocalBackend])
 
   useEffect(() => {
     async function loadProviders() {
@@ -1029,8 +1037,12 @@ export default function App() {
   async function refreshDiagnostics(nextSettings = settings) {
     setDiagnosticsLoading(true)
     try {
-      const targetBaseUrl = String(nextSettings?.app?.backendUrl || runtimeApiBaseUrl || '').trim().replace(/\/$/, '')
-      if (!isLocalBrowser && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(targetBaseUrl)) {
+      const explicitBaseUrl = String(nextSettings?.app?.backendUrl || '').trim().replace(/\/$/, '')
+      const targetBaseUrl =
+        explicitBaseUrl && (isLocalBrowser || !isLocalBackendUrl(explicitBaseUrl))
+          ? explicitBaseUrl
+          : runtimeApiBaseUrl
+      if (!isLocalBrowser && isLocalBackendUrl(targetBaseUrl)) {
         throw new Error('Nasazená aplikace nevidí localhost backend. Použij stejnou doménu, nebo nastav veřejnou HTTPS URL backendu.')
       }
       const response = await fetch(apiUrl('/api/providers/diagnostics', targetBaseUrl), {
