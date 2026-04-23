@@ -318,6 +318,14 @@ function sanitizeSettings(settings) {
 function apiUrl(path, apiBaseUrl = '') {
   return apiBaseUrl ? `${apiBaseUrl}${path}` : path
 }
+function defaultApiBaseUrl() {
+  const configured = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '')
+  if (configured) return configured
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app')) {
+    return '/_/backend'
+  }
+  return ''
+}
 async function parseJsonSafely(response) {
   const text = await response.text()
   if (!text) return null
@@ -700,7 +708,7 @@ export default function App() {
   const runtimeApiBaseUrl = useMemo(() => {
     const explicit = String(settings.app?.backendUrl || '').trim().replace(/\/$/, '')
     if (explicit) return explicit
-    return ''
+    return defaultApiBaseUrl()
   }, [settings])
   const remoteAppUsesLocalBackend =
     !isLocalBrowser && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(runtimeApiBaseUrl)
